@@ -10,8 +10,8 @@ use crate::schema::{
     BillingSnapshot, BillingSnapshotStatus, CostResult, BILLING_SNAPSHOT_SCHEMA_VERSION,
 };
 use crate::{
-    normalize_input_tokens_for_billing, ExpressionEvaluationError, FormulaEngine,
-    FormulaEvaluationStatus,
+    normalize_input_tokens_for_billing, normalize_total_input_context_for_cache_hit_rate,
+    ExpressionEvaluationError, FormulaEngine, FormulaEvaluationStatus,
 };
 
 pub struct BillingService {
@@ -136,10 +136,12 @@ fn build_dimensions(input: &BillingUsageInput) -> BTreeMap<String, Value> {
         .cache_creation_tokens
         .saturating_sub(classified_cache_creation_tokens)
         .max(0);
-    let total_input_context = input
-        .input_tokens
-        .saturating_add(input.cache_creation_tokens)
-        .saturating_add(input.cache_read_tokens);
+    let total_input_context = normalize_total_input_context_for_cache_hit_rate(
+        input.api_format.as_deref(),
+        input.input_tokens,
+        input.cache_creation_tokens,
+        input.cache_read_tokens,
+    );
 
     let mut out = BTreeMap::from([
         ("input_tokens".to_string(), json!(normalized_input_tokens)),
@@ -263,6 +265,44 @@ mod tests {
         assert!(result.cost_result.cost > 0.0);
         assert!(result.actual_total_cost > 0.0);
         assert_eq!(result.rate_multiplier, 0.5);
+    }
+
+    #[test]
+    fn openai_cache_hit_context_does_not_double_count_cache_read() {
+        let result = BillingService::new()
+            .calculate(
+                &pricing(),
+                &BillingUsageInput {
+                    task_type: "chat".to_string(),
+                    api_format: Some("openai:responses".to_string()),
+                    request_count: 1,
+                    input_tokens: 1_000,
+                    output_tokens: 10,
+                    cache_creation_tokens: 0,
+                    cache_creation_ephemeral_5m_tokens: 0,
+                    cache_creation_ephemeral_1h_tokens: 0,
+                    cache_read_tokens: 800,
+                    cache_ttl_minutes: Some(60),
+                },
+            )
+            .expect("billing should calculate");
+
+        assert_eq!(
+            result
+                .cost_result
+                .snapshot
+                .resolved_dimensions
+                .get("input_tokens"),
+            Some(&json!(200))
+        );
+        assert_eq!(
+            result
+                .cost_result
+                .snapshot
+                .resolved_dimensions
+                .get("total_input_context"),
+            Some(&json!(1_000))
+        );
     }
 
     #[test]
