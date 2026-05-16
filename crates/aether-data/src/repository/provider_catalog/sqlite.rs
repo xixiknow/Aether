@@ -2058,8 +2058,8 @@ mod tests {
     use super::SqliteProviderCatalogReadRepository;
     use crate::lifecycle::migrate::run_sqlite_migrations;
     use crate::repository::provider_catalog::{
-        ProviderCatalogKeyListOrder, ProviderCatalogKeyListQuery, ProviderCatalogReadRepository,
-        StoredProviderCatalogEndpoint, StoredProviderCatalogKey, StoredProviderCatalogProvider,
+        ProviderCatalogKeyListOrder, ProviderCatalogKeyListQuery, StoredProviderCatalogEndpoint,
+        StoredProviderCatalogKey, StoredProviderCatalogProvider,
     };
     use serde_json::json;
 

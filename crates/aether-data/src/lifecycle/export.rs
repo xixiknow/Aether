@@ -971,7 +971,7 @@ fn sql_string_literal(value: &str) -> String {
 
 fn hex_decode(value: &str, column_name: &str) -> Result<Vec<u8>, DataLayerError> {
     let value = value.trim();
-    if value.len() % 2 != 0 {
+    if !value.len().is_multiple_of(2) {
         return Err(DataLayerError::InvalidInput(format!(
             "sqlite copy column '{column_name}' has odd-length hex data"
         )));
