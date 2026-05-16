@@ -2194,22 +2194,25 @@ fn extract_token_counts_from_value(value: &Value) -> Option<(u64, u64, u64)> {
 }
 
 fn apply_cancelled_usage_estimate(data: &mut UsageEventData) {
-    if positive_tokens(data.input_tokens) > 0
-        && positive_tokens(data.output_tokens) > 0
-        && positive_tokens(data.total_tokens) > 0
-    {
-        return;
-    }
+    let provider_usage_available = data
+        .response_body
+        .as_ref()
+        .and_then(extract_token_counts_from_value)
+        .is_some();
+    let request_usage = data
+        .provider_request_body
+        .as_ref()
+        .or(data.request_body.as_ref())
+        .and_then(|value| estimate_request_usage(value, cancelled_usage_api_format(data)));
 
     if positive_tokens(data.input_tokens) == 0 {
-        if let Some(input_tokens) = data
-            .provider_request_body
-            .as_ref()
-            .or(data.request_body.as_ref())
-            .and_then(estimate_request_input_tokens)
-        {
-            data.input_tokens = Some(input_tokens);
+        if let Some(usage) = request_usage.as_ref() {
+            data.input_tokens = Some(usage.input_tokens);
         }
+    }
+
+    if !provider_usage_available {
+        apply_cancelled_request_cache_estimate(data, request_usage.as_ref());
     }
 
     if positive_tokens(data.output_tokens) == 0 {
@@ -2232,11 +2235,58 @@ fn apply_cancelled_usage_estimate(data: &mut UsageEventData) {
     }
 }
 
+fn cancelled_usage_api_format(data: &UsageEventData) -> Option<&str> {
+    data.endpoint_api_format
+        .as_deref()
+        .or(data.api_format.as_deref())
+}
+
+fn apply_cancelled_request_cache_estimate(
+    data: &mut UsageEventData,
+    request_usage: Option<&EstimatedRequestUsage>,
+) {
+    let Some(request_usage) = request_usage else {
+        return;
+    };
+    if positive_tokens(data.cache_read_input_tokens) == 0 && request_usage.cache_read_tokens > 0 {
+        data.cache_read_input_tokens = Some(request_usage.cache_read_tokens);
+    }
+    if positive_tokens(data.cache_creation_input_tokens) == 0
+        && request_usage.cache_creation_tokens > 0
+    {
+        data.cache_creation_input_tokens = Some(request_usage.cache_creation_tokens);
+    }
+    if positive_tokens(data.cache_creation_ephemeral_5m_input_tokens) == 0
+        && request_usage.cache_creation_ephemeral_5m_tokens > 0
+    {
+        data.cache_creation_ephemeral_5m_input_tokens =
+            Some(request_usage.cache_creation_ephemeral_5m_tokens);
+    }
+    if positive_tokens(data.cache_creation_ephemeral_1h_input_tokens) == 0
+        && request_usage.cache_creation_ephemeral_1h_tokens > 0
+    {
+        data.cache_creation_ephemeral_1h_input_tokens =
+            Some(request_usage.cache_creation_ephemeral_1h_tokens);
+    }
+}
+
 fn positive_tokens(value: Option<u64>) -> u64 {
     value.unwrap_or_default()
 }
 
-fn estimate_request_input_tokens(value: &Value) -> Option<u64> {
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+struct EstimatedRequestUsage {
+    input_tokens: u64,
+    cache_read_tokens: u64,
+    cache_creation_tokens: u64,
+    cache_creation_ephemeral_5m_tokens: u64,
+    cache_creation_ephemeral_1h_tokens: u64,
+}
+
+fn estimate_request_usage(
+    value: &Value,
+    api_format: Option<&str>,
+) -> Option<EstimatedRequestUsage> {
     let preferred_total = match value {
         Value::Object(object) => [
             "instructions",
@@ -2258,7 +2308,102 @@ fn estimate_request_input_tokens(value: &Value) -> Option<u64> {
     } else {
         estimate_json_tokens(value)
     };
-    (total > 0).then_some(total)
+    if total == 0 {
+        return None;
+    }
+
+    let mut usage = EstimatedRequestUsage {
+        input_tokens: total,
+        ..EstimatedRequestUsage::default()
+    };
+    apply_explicit_request_cache_usage(value, &mut usage);
+    if usage.cache_read_tokens == 0 && request_has_openai_prompt_cache_key(value, api_format) {
+        usage.cache_read_tokens = usage.input_tokens;
+    }
+    Some(usage)
+}
+
+fn apply_explicit_request_cache_usage(value: &Value, usage: &mut EstimatedRequestUsage) {
+    usage.cache_read_tokens = first_positive_u64_path(
+        value,
+        &[
+            &["cache_read_input_tokens"],
+            &["cache_read_tokens"],
+            &["input_tokens_details", "cached_tokens"],
+            &["prompt_tokens_details", "cached_tokens"],
+        ],
+    )
+    .unwrap_or_default();
+    usage.cache_creation_tokens = first_positive_u64_path(
+        value,
+        &[
+            &["cache_creation_input_tokens"],
+            &["cache_creation_tokens"],
+            &["input_tokens_details", "cached_creation_tokens"],
+            &["prompt_tokens_details", "cached_creation_tokens"],
+        ],
+    )
+    .unwrap_or_default();
+    usage.cache_creation_ephemeral_5m_tokens = first_positive_u64_path(
+        value,
+        &[
+            &["cache_creation", "ephemeral_5m_input_tokens"],
+            &["cache_creation_ephemeral_5m_input_tokens"],
+        ],
+    )
+    .unwrap_or_default();
+    usage.cache_creation_ephemeral_1h_tokens = first_positive_u64_path(
+        value,
+        &[
+            &["cache_creation", "ephemeral_1h_input_tokens"],
+            &["cache_creation_ephemeral_1h_input_tokens"],
+        ],
+    )
+    .unwrap_or_default();
+    if usage.cache_creation_tokens == 0 {
+        usage.cache_creation_tokens = usage
+            .cache_creation_ephemeral_5m_tokens
+            .saturating_add(usage.cache_creation_ephemeral_1h_tokens);
+    }
+}
+
+fn first_positive_u64_path(value: &Value, paths: &[&[&str]]) -> Option<u64> {
+    paths
+        .iter()
+        .find_map(|path| value_at_path(value, path).and_then(value_as_positive_u64))
+}
+
+fn value_at_path<'a>(mut value: &'a Value, path: &[&str]) -> Option<&'a Value> {
+    for segment in path {
+        value = value.get(*segment)?;
+    }
+    Some(value)
+}
+
+fn value_as_positive_u64(value: &Value) -> Option<u64> {
+    value
+        .as_u64()
+        .or_else(|| value.as_i64().and_then(|number| u64::try_from(number).ok()))
+        .filter(|value| *value > 0)
+}
+
+fn request_has_openai_prompt_cache_key(value: &Value, api_format: Option<&str>) -> bool {
+    api_family_matches(api_format, "openai")
+        && value
+            .get("prompt_cache_key")
+            .and_then(Value::as_str)
+            .is_some_and(|value| !value.trim().is_empty())
+}
+
+fn api_family_matches(api_format: Option<&str>, expected: &str) -> bool {
+    api_format
+        .and_then(|value| {
+            value
+                .split_once(':')
+                .map(|(family, _)| family)
+                .or(Some(value))
+        })
+        .is_some_and(|family| family.eq_ignore_ascii_case(expected))
 }
 
 fn estimate_json_tokens(value: &Value) -> u64 {
@@ -3201,6 +3346,69 @@ mod tests {
             event.data.total_tokens,
             Some(event.data.input_tokens.unwrap_or_default() + 5)
         );
+    }
+
+    #[test]
+    fn cancelled_stream_usage_estimates_prompt_cache_read_tokens() {
+        let request_body = json!({
+            "model": "gpt-5.4",
+            "input": "Use the cached project context and answer briefly",
+            "prompt_cache_key": "prompt-session-1",
+            "stream": true
+        });
+        let plan = ExecutionPlan {
+            request_id: "req-stream-cancelled-cache-estimated-usage-1".to_string(),
+            candidate_id: Some("cand-stream-cancelled-cache-estimated-usage-1".to_string()),
+            provider_name: Some("OpenAI".to_string()),
+            provider_id: "provider-1".to_string(),
+            endpoint_id: "endpoint-1".to_string(),
+            key_id: "key-1".to_string(),
+            method: "POST".to_string(),
+            url: "https://example.com/v1/responses".to_string(),
+            headers: BTreeMap::new(),
+            content_type: Some("application/json".to_string()),
+            content_encoding: None,
+            body: RequestBody::from_json(request_body.clone()),
+            stream: true,
+            client_api_format: "openai:responses".to_string(),
+            provider_api_format: "openai:responses".to_string(),
+            model_name: Some("gpt-5.4".to_string()),
+            proxy: None,
+            transport_profile: None,
+            timeouts: None,
+        };
+        let payload = GatewayStreamReportRequest {
+            trace_id: "trace-stream-cancelled-cache-estimated-usage-1".to_string(),
+            report_kind: "openai_responses_stream_cancelled".to_string(),
+            report_context: Some(json!({
+                "client_api_format": "openai:responses",
+                "provider_api_format": "openai:responses",
+                "provider_request_body": request_body
+            })),
+            status_code: 499,
+            headers: BTreeMap::new(),
+            provider_body_base64: Some(base64::engine::general_purpose::STANDARD.encode(
+                "data: {\"type\":\"response.output_text.delta\",\"delta\":\"cached answer\"}\n\n",
+            )),
+            provider_body_state: Some(UsageBodyCaptureState::Inline),
+            client_body_base64: None,
+            client_body_state: Some(UsageBodyCaptureState::None),
+            terminal_summary: None,
+            telemetry: None,
+        };
+
+        let event =
+            build_stream_terminal_usage_event(&plan, payload.report_context.as_ref(), &payload)
+                .expect("usage event should build");
+        let input_tokens = event
+            .data
+            .input_tokens
+            .expect("input estimate should exist");
+
+        assert_eq!(event.event_type, UsageEventType::Cancelled);
+        assert_eq!(event.data.cache_read_input_tokens, Some(input_tokens));
+        assert_eq!(event.data.output_tokens, Some(4));
+        assert_eq!(event.data.total_tokens, Some(input_tokens + 4));
     }
 
     #[test]

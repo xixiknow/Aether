@@ -451,6 +451,26 @@ mod tests {
                 .and_then(Value::as_i64),
             Some(0)
         );
+        assert_eq!(
+            event
+                .data
+                .request_metadata
+                .as_ref()
+                .and_then(|value| value.get("billing_dimensions"))
+                .and_then(|value| value.get("input_tokens"))
+                .and_then(Value::as_i64),
+            Some(900)
+        );
+        assert_eq!(
+            event
+                .data
+                .request_metadata
+                .as_ref()
+                .and_then(|value| value.get("billing_dimensions"))
+                .and_then(|value| value.get("cache_read_tokens"))
+                .and_then(Value::as_i64),
+            Some(100)
+        );
     }
 
     #[tokio::test]
