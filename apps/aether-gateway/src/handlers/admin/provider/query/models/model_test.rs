@@ -555,7 +555,6 @@ fn provider_query_build_test_request_body_with_model_policy(
             "content": provider_query_extract_message(payload)
                 .unwrap_or_else(|| DEFAULT_PROVIDER_QUERY_TEST_MESSAGE.to_string())
         }],
-        "max_tokens": 30,
         "temperature": 0.7,
         "stream": true,
     })
@@ -1256,7 +1255,7 @@ fn provider_query_standard_execution_response_body(
     provider_api_format: &str,
     result: &aether_contracts::ExecutionResult,
 ) -> Option<Value> {
-    result
+    let body = result
         .body
         .as_ref()
         .and_then(|body| body.json_body.clone())
@@ -1264,7 +1263,15 @@ fn provider_query_standard_execution_response_body(
             provider_query_decode_execution_body(result).and_then(|body| {
                 provider_query_aggregate_standard_stream_sync_response(provider_api_format, &body)
             })
-        })
+        })?;
+    if result.status_code < 400
+        && provider_query_normalize_api_format_alias(provider_api_format)
+            == "gemini:generate_content"
+        && aether_ai_formats::formats::gemini::generate_content::response::from_raw(&body).is_none()
+    {
+        return None;
+    }
+    Some(body)
 }
 
 fn provider_query_extract_error_message(
