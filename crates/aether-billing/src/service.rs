@@ -30,6 +30,7 @@ impl BillingService {
         pricing: &BillingModelPricingSnapshot,
         input: &BillingUsageInput,
     ) -> Result<BillingComputation, ExpressionEvaluationError> {
+        let image_output_pricing = image_output_pricing_state(pricing);
         let Some(rule) =
             DefaultBillingRuleGenerator::generate_for_pricing(pricing, &input.task_type)
         else {
@@ -43,7 +44,7 @@ impl BillingService {
                         rule_name: None,
                         scope: None,
                         expression: None,
-                        resolved_dimensions: build_dimensions(input),
+                        resolved_dimensions: build_dimensions(input, image_output_pricing),
                         resolved_variables: BTreeMap::new(),
                         cost_breakdown: BTreeMap::new(),
                         total_cost: 0.0,
@@ -62,7 +63,7 @@ impl BillingService {
             });
         };
 
-        let dims = build_dimensions(input);
+        let dims = build_dimensions(input, image_output_pricing);
         let result = self.engine.evaluate(
             &rule.expression,
             Some(&rule.variables),
@@ -123,7 +124,10 @@ impl Default for BillingService {
     }
 }
 
-fn build_dimensions(input: &BillingUsageInput) -> BTreeMap<String, Value> {
+fn build_dimensions(
+    input: &BillingUsageInput,
+    image_output_pricing: ImageOutputPricingState,
+) -> BTreeMap<String, Value> {
     let normalized_input_tokens = normalize_input_tokens_for_billing(
         input.api_format.as_deref(),
         input.input_tokens,
@@ -173,10 +177,28 @@ fn build_dimensions(input: &BillingUsageInput) -> BTreeMap<String, Value> {
         ("image_count".to_string(), json!(input.image_count.max(0))),
         (
             "image_count_unmetered".to_string(),
-            json!(if input.output_tokens > 0 {
-                0
-            } else {
+            json!(if image_output_pricing.enabled {
                 input.image_count.max(0)
+            } else {
+                0
+            }),
+        ),
+        (
+            "image_output_pricing_enabled".to_string(),
+            json!(image_output_pricing.enabled),
+        ),
+        (
+            "image_output_matrix_enabled".to_string(),
+            json!(image_output_pricing.matrix_enabled),
+        ),
+        (
+            "image_output_pricing_mode".to_string(),
+            json!(if image_output_pricing.matrix_enabled {
+                "matrix"
+            } else if image_output_pricing.enabled {
+                "per_image"
+            } else {
+                "none"
             }),
         ),
         (
@@ -245,6 +267,66 @@ fn build_dimensions(input: &BillingUsageInput) -> BTreeMap<String, Value> {
         out.insert("image_output_format".to_string(), json!(output_format));
     }
     out
+}
+
+#[derive(Debug, Clone, Copy)]
+struct ImageOutputPricingState {
+    enabled: bool,
+    matrix_enabled: bool,
+}
+
+fn image_output_pricing_state(pricing: &BillingModelPricingSnapshot) -> ImageOutputPricingState {
+    let matrix_enabled = pricing_has_image_output_matrix(pricing);
+    let default_enabled = pricing_has_image_output_default_price(pricing);
+    ImageOutputPricingState {
+        enabled: matrix_enabled || default_enabled,
+        matrix_enabled,
+    }
+}
+
+fn pricing_has_image_output_matrix(pricing: &BillingModelPricingSnapshot) -> bool {
+    let Some(config) = pricing.effective_tiered_pricing() else {
+        return false;
+    };
+    [
+        "image_output_prices",
+        "image_output_price_per_image",
+        "image_output_price_matrix",
+        "image_prices",
+    ]
+    .iter()
+    .any(|key| {
+        config
+            .get(key)
+            .is_some_and(image_price_entries_have_matrix_values)
+    })
+}
+
+fn pricing_has_image_output_default_price(pricing: &BillingModelPricingSnapshot) -> bool {
+    let Some(config) = pricing.effective_tiered_pricing() else {
+        return false;
+    };
+    config
+        .get("image_output_price_default")
+        .or_else(|| config.get("image_price_default"))
+        .or_else(|| {
+            config
+                .get("image_output_prices")
+                .and_then(|value| value.get("default"))
+        })
+        .and_then(Value::as_f64)
+        .is_some()
+}
+
+fn image_price_entries_have_matrix_values(value: &Value) -> bool {
+    match value {
+        Value::Object(object) => object.iter().any(|(key, value)| {
+            !key.eq_ignore_ascii_case("default")
+                && (value.as_f64().is_some() || image_price_entries_have_matrix_values(value))
+        }),
+        Value::Array(items) => items.iter().any(image_price_entries_have_matrix_values),
+        _ => false,
+    }
 }
 
 fn now_marker() -> String {
@@ -359,6 +441,227 @@ mod tests {
                 .resolved_dimensions
                 .get("total_input_context"),
             Some(&json!(1_000))
+        );
+    }
+
+    #[test]
+    fn image_token_usage_without_image_output_price_bills_tokens_only() {
+        let pricing = BillingModelPricingSnapshot {
+            default_price_per_request: None,
+            default_tiered_pricing: Some(json!({
+                "tiers": [{
+                    "up_to": null,
+                    "input_price_per_1m": 1.0,
+                    "output_price_per_1m": 2.0
+                }]
+            })),
+            ..pricing()
+        };
+
+        let result = BillingService::new()
+            .calculate(
+                &pricing,
+                &BillingUsageInput {
+                    task_type: "image".to_string(),
+                    api_format: Some("openai:image".to_string()),
+                    request_count: 1,
+                    input_tokens: 1_000,
+                    output_tokens: 20_000,
+                    cache_creation_tokens: 0,
+                    cache_creation_ephemeral_5m_tokens: 0,
+                    cache_creation_ephemeral_1h_tokens: 0,
+                    cache_read_tokens: 0,
+                    image_count: 1,
+                    image_size: Some("1024x1024".to_string()),
+                    image_quality: Some("medium".to_string()),
+                    image_output_format: Some("png".to_string()),
+                    cache_ttl_minutes: None,
+                },
+            )
+            .expect("billing should calculate");
+
+        assert_eq!(
+            result
+                .cost_result
+                .snapshot
+                .resolved_dimensions
+                .get("image_output_pricing_mode"),
+            Some(&json!("none"))
+        );
+        assert_eq!(
+            result
+                .cost_result
+                .snapshot
+                .resolved_dimensions
+                .get("image_count_unmetered"),
+            Some(&json!(0))
+        );
+        assert_eq!(
+            result
+                .cost_result
+                .snapshot
+                .cost_breakdown
+                .get("image_output_cost"),
+            Some(&0.0)
+        );
+        assert_eq!(result.cost_result.cost, 0.041);
+    }
+
+    #[test]
+    fn image_default_output_price_adds_image_cost_even_with_token_usage() {
+        let pricing = BillingModelPricingSnapshot {
+            default_price_per_request: None,
+            default_tiered_pricing: Some(json!({
+                "tiers": [{
+                    "up_to": null,
+                    "input_price_per_1m": 1.0,
+                    "output_price_per_1m": 2.0
+                }],
+                "image_output_price_default": 0.05
+            })),
+            ..pricing()
+        };
+
+        let result = BillingService::new()
+            .calculate(
+                &pricing,
+                &BillingUsageInput {
+                    task_type: "image".to_string(),
+                    api_format: Some("openai:image".to_string()),
+                    request_count: 1,
+                    input_tokens: 1_000,
+                    output_tokens: 20_000,
+                    cache_creation_tokens: 0,
+                    cache_creation_ephemeral_5m_tokens: 0,
+                    cache_creation_ephemeral_1h_tokens: 0,
+                    cache_read_tokens: 0,
+                    image_count: 1,
+                    image_size: Some("1024x1024".to_string()),
+                    image_quality: Some("medium".to_string()),
+                    image_output_format: Some("png".to_string()),
+                    cache_ttl_minutes: None,
+                },
+            )
+            .expect("billing should calculate");
+
+        assert_eq!(
+            result
+                .cost_result
+                .snapshot
+                .resolved_dimensions
+                .get("image_output_pricing_mode"),
+            Some(&json!("per_image"))
+        );
+        assert_eq!(
+            result
+                .cost_result
+                .snapshot
+                .cost_breakdown
+                .get("image_output_cost"),
+            Some(&0.05)
+        );
+        assert_eq!(result.cost_result.cost, 0.091);
+    }
+
+    #[test]
+    fn image_default_output_price_generates_rule_without_token_tiers() {
+        let pricing = BillingModelPricingSnapshot {
+            default_price_per_request: None,
+            default_tiered_pricing: Some(json!({
+                "image_output_price_default": 0.05
+            })),
+            ..pricing()
+        };
+
+        let result = BillingService::new()
+            .calculate(
+                &pricing,
+                &BillingUsageInput {
+                    task_type: "image".to_string(),
+                    api_format: Some("openai:image".to_string()),
+                    request_count: 1,
+                    input_tokens: 0,
+                    output_tokens: 0,
+                    cache_creation_tokens: 0,
+                    cache_creation_ephemeral_5m_tokens: 0,
+                    cache_creation_ephemeral_1h_tokens: 0,
+                    cache_read_tokens: 0,
+                    image_count: 2,
+                    image_size: Some("1024x1024".to_string()),
+                    image_quality: Some("medium".to_string()),
+                    image_output_format: Some("png".to_string()),
+                    cache_ttl_minutes: None,
+                },
+            )
+            .expect("billing should calculate");
+
+        assert_eq!(result.cost_result.status, BillingSnapshotStatus::Complete);
+        assert_eq!(
+            result
+                .cost_result
+                .snapshot
+                .cost_breakdown
+                .get("image_output_cost"),
+            Some(&0.1)
+        );
+        assert_eq!(result.cost_result.cost, 0.1);
+    }
+
+    #[test]
+    fn image_token_usage_with_matrix_adds_matrix_image_cost() {
+        let pricing = BillingModelPricingSnapshot {
+            default_price_per_request: None,
+            default_tiered_pricing: Some(json!({
+                "tiers": [{
+                    "up_to": null,
+                    "input_price_per_1m": 1.0,
+                    "output_price_per_1m": 2.0
+                }],
+                "image_output_price_default": 0.01,
+                "image_output_prices": {
+                    "1024x1024": { "medium": 0.05 }
+                }
+            })),
+            ..pricing()
+        };
+
+        let result = BillingService::new()
+            .calculate(
+                &pricing,
+                &BillingUsageInput {
+                    task_type: "image".to_string(),
+                    api_format: Some("openai:image".to_string()),
+                    request_count: 1,
+                    input_tokens: 1_000,
+                    output_tokens: 20_000,
+                    cache_creation_tokens: 0,
+                    cache_creation_ephemeral_5m_tokens: 0,
+                    cache_creation_ephemeral_1h_tokens: 0,
+                    cache_read_tokens: 0,
+                    image_count: 1,
+                    image_size: Some("1024x1024".to_string()),
+                    image_quality: Some("medium".to_string()),
+                    image_output_format: Some("png".to_string()),
+                    cache_ttl_minutes: None,
+                },
+            )
+            .expect("billing should calculate");
+
+        assert_eq!(
+            result
+                .cost_result
+                .snapshot
+                .resolved_dimensions
+                .get("image_output_pricing_mode"),
+            Some(&json!("matrix"))
+        );
+        assert_eq!(
+            result
+                .cost_result
+                .snapshot
+                .cost_breakdown
+                .get("image_output_cost"),
+            Some(&0.05)
         );
     }
 

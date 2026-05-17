@@ -126,6 +126,24 @@
         </div>
       </div>
 
+      <div class="rounded-lg border border-border/60 bg-muted/20 px-3 py-2">
+        <div class="flex items-start gap-2">
+          <Checkbox
+            :model-value="isImageGenerationEnabled"
+            class="mt-0.5"
+            @update:model-value="setImageGenerationEnabled"
+          />
+          <div class="space-y-1">
+            <div class="text-sm font-medium">
+              图片模型
+            </div>
+            <p class="text-xs text-muted-foreground">
+              启用图片输出计费，并展开尺寸 × 质量矩阵价格。
+            </p>
+          </div>
+        </div>
+      </div>
+
       <!-- 价格配置 -->
       <div class="space-y-4">
         <h4 class="font-semibold text-sm border-b pb-2">
@@ -135,6 +153,7 @@
           ref="tieredPricingEditorRef"
           v-model="tieredPricing"
           :show-cache1h="showCache1h"
+          :show-image-pricing="isImageGenerationEnabled"
         />
 
         <!-- 按次计费 -->
@@ -281,6 +300,7 @@ import {
   SelectContent,
   SelectItem,
   Badge,
+  Checkbox,
 } from '@/components/ui'
 import { useToast } from '@/composables/useToast'
 import { parseNumberInput, sortResolutionEntries } from '@/utils/form'
@@ -322,9 +342,23 @@ const selectedGlobalModel = computed(() => {
 })
 
 const selectedGlobalModelSupportsEmbedding = computed(() => modelSupportsEmbedding(selectedGlobalModel.value))
+const selectedGlobalModelSupportsImageGeneration = computed(() => modelSupportsImageGeneration(selectedGlobalModel.value))
 const editingModelSupportsEmbedding = computed(() => {
   return props.editingModel?.effective_supports_embedding === true
     || modelSupportsEmbedding(props.editingModel)
+})
+const editingModelSupportsImageGeneration = computed(() => {
+  return props.editingModel?.effective_supports_image_generation === true
+    || modelSupportsImageGeneration(props.editingModel)
+})
+
+const isImageGenerationEnabled = computed(() => {
+  if (form.value.supports_image_generation !== undefined) {
+    return form.value.supports_image_generation === true
+  }
+  return isEditing.value
+    ? editingModelSupportsImageGeneration.value
+    : selectedGlobalModelSupportsImageGeneration.value
 })
 
 // 1h 缓存定价始终显示
@@ -504,6 +538,26 @@ function syncManualProviderName(value: string | number) {
   if (!form.value.manual_global_model_display_name.trim()) {
     form.value.manual_global_model_display_name = modelName
   }
+}
+
+function modelSupportsImageGeneration(model: {
+  supported_capabilities?: string[] | null
+  supports_image_generation?: boolean | null
+  effective_supports_image_generation?: boolean | null
+  config?: Record<string, unknown> | null
+} | null | undefined): boolean {
+  if (!model) return false
+  if (model.effective_supports_image_generation === true) return true
+  if (model.supports_image_generation === true) return true
+  const config = model.config || {}
+  return model.supported_capabilities?.includes('image_generation') === true
+    || config.image_generation === true
+    || config.model_type === 'image'
+    || (Array.isArray(config.api_formats) && config.api_formats.some((format) => String(format).endsWith(':image')))
+}
+
+function setImageGenerationEnabled(value: boolean | 'indeterminate') {
+  form.value.supports_image_generation = value === true
 }
 
 function getNested(obj: Record<string, unknown>, path: string): unknown {

@@ -203,6 +203,21 @@
                   </div>
                 </div>
               </div>
+              <div class="flex items-start gap-2 border-t border-border/60 pt-3">
+                <Checkbox
+                  :model-value="isImageGenerationEnabled"
+                  class="mt-0.5"
+                  @update:model-value="setImageGenerationEnabled"
+                />
+                <div class="space-y-1">
+                  <div class="text-sm font-medium">
+                    图片模型
+                  </div>
+                  <p class="text-xs text-muted-foreground">
+                    启用图片输出计费，并展开尺寸 × 质量矩阵价格。
+                  </p>
+                </div>
+              </div>
             </div>
           </section>
 
@@ -215,6 +230,7 @@
               ref="tieredPricingEditorRef"
               v-model="tieredPricing"
               :show-cache1h="true"
+              :show-image-pricing="isImageGenerationEnabled"
             />
             <div class="flex items-center gap-3 pt-2 border-t">
               <Label class="text-xs whitespace-nowrap">按次计费</Label>
@@ -534,6 +550,14 @@ const isEmbeddingEnabled = computed(() => {
     || form.value.config?.model_type === 'embedding'
 })
 
+const isImageGenerationEnabled = computed(() => {
+  return form.value.supported_capabilities?.includes('image_generation') === true
+    || form.value.config?.image_generation === true
+    || form.value.config?.model_type === 'image'
+    || (Array.isArray(form.value.config?.api_formats)
+      && form.value.config.api_formats.some((format) => String(format).endsWith(':image')))
+})
+
 const KEEP_FALSE_CONFIG_KEYS = new Set(['streaming'])
 
 // 设置 config 字段
@@ -572,6 +596,20 @@ function setEmbeddingEnabled(enabled: boolean) {
       && form.value.config.api_formats.every((format) => embeddingApiFormats.includes(String(format)))) {
       setConfigField('api_formats', undefined)
     }
+  }
+  form.value.supported_capabilities = [...caps]
+}
+
+function setImageGenerationEnabled(value: boolean | 'indeterminate') {
+  const enabled = value === true
+  const caps = new Set(form.value.supported_capabilities || [])
+  if (enabled) {
+    caps.add('image_generation')
+    setConfigField('image_generation', true)
+  } else {
+    caps.delete('image_generation')
+    setConfigField('image_generation', undefined)
+    if (form.value.config?.model_type === 'image') setConfigField('model_type', undefined)
   }
   form.value.supported_capabilities = [...caps]
 }
@@ -753,7 +791,10 @@ function selectModel(model: ModelsDevModelItem) {
   if (model.inputModalities?.length) config.input_modalities = model.inputModalities
   if (model.outputModalities?.length) config.output_modalities = model.outputModalities
   form.value.config = config
-  form.value.supported_capabilities = model.supportsEmbedding ? ['embedding'] : []
+  const supportedCapabilities = new Set<string>()
+  if (model.supportsEmbedding) supportedCapabilities.add('embedding')
+  if (model.outputModalities?.includes('image')) supportedCapabilities.add('image_generation')
+  form.value.supported_capabilities = [...supportedCapabilities]
   if (model.supportsEmbedding) {
     setEmbeddingEnabled(true)
   }

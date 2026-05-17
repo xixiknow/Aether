@@ -137,7 +137,10 @@
       添加价格阶梯
     </Button>
 
-    <div class="rounded-lg border bg-muted/10 p-3 space-y-3">
+    <div
+      v-if="showImagePricing"
+      class="rounded-lg border bg-muted/10 p-3 space-y-3"
+    >
       <div class="flex flex-wrap items-end justify-between gap-3">
         <Label class="text-xs font-medium">图像输出矩阵 ($/张)</Label>
         <div class="flex items-center gap-2">
@@ -211,6 +214,7 @@ const IMAGE_OUTPUT_QUALITIES: ImageOutputQuality[] = ['low', 'medium', 'high']
 const props = defineProps<{
   modelValue?: TieredPricingConfig | null
   showCache1h?: boolean
+  showImagePricing?: boolean
 }>()
 
 const emit = defineEmits<{
@@ -481,6 +485,9 @@ defineExpose({
 
 function buildPricingConfig(tiers: PricingTier[]): TieredPricingConfig {
   const config: TieredPricingConfig = { tiers }
+  if (!props.showImagePricing) {
+    return config
+  }
   const matrix = normalizedImageOutputPrices()
   if (Object.keys(matrix).length > 0) {
     config.image_output_prices = matrix

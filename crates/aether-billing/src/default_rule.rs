@@ -33,12 +33,14 @@ impl DefaultBillingRuleGenerator {
         let image_output_price_entries = explicit_image_output_price_entries(pricing_config)
             .filter(|entries| !entries.is_empty())
             .unwrap_or_default();
-        let image_output_price_default =
-            explicit_image_output_price_default(pricing_config).unwrap_or(0.0);
+        let explicit_image_output_price_default = explicit_image_output_price_default(pricing_config);
+        let image_output_price_default = explicit_image_output_price_default.unwrap_or(0.0);
+        let has_image_output_pricing =
+            !image_output_price_entries.is_empty() || explicit_image_output_price_default.is_some();
 
         if tiers.is_empty()
             && pricing.effective_price_per_request().is_none()
-            && image_output_price_entries.is_empty()
+            && !has_image_output_pricing
         {
             return None;
         }

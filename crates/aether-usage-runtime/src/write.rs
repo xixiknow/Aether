@@ -2298,6 +2298,7 @@ fn apply_completed_image_usage_estimate(data: &mut UsageEventData) {
     if !usage_event_data_is_image(data) {
         return;
     }
+    apply_completed_image_dimensions(data);
     if data
         .response_body
         .as_ref()
@@ -2325,6 +2326,110 @@ fn apply_completed_image_usage_estimate(data: &mut UsageEventData) {
             data.total_tokens = Some(total_tokens);
         }
     }
+}
+
+fn apply_completed_image_dimensions(data: &mut UsageEventData) {
+    let image_count = usage_dimension_i64(data.request_metadata.as_ref(), "image_count")
+        .or_else(|| image_response_count(data.response_body.as_ref()))
+        .or_else(|| image_request_count(data.provider_request_body.as_ref()))
+        .or_else(|| image_request_count(data.request_body.as_ref()));
+
+    if let Some(image_count) = image_count.filter(|value| *value > 0) {
+        set_usage_dimension_if_absent(data, "image_count", json!(image_count));
+    }
+
+    for (dimension, request_key) in [
+        ("image_size", "size"),
+        ("image_quality", "quality"),
+        ("image_output_format", "output_format"),
+    ] {
+        if usage_dimension_string(data.request_metadata.as_ref(), dimension).is_some() {
+            continue;
+        }
+        if let Some(value) = image_request_string(data.provider_request_body.as_ref(), request_key)
+            .or_else(|| image_request_string(data.request_body.as_ref(), request_key))
+        {
+            set_usage_dimension_if_absent(data, dimension, json!(value));
+        }
+    }
+}
+
+fn usage_dimension_i64(metadata: Option<&Value>, key: &str) -> Option<i64> {
+    metadata
+        .and_then(Value::as_object)
+        .and_then(|object| object.get("dimensions"))
+        .and_then(Value::as_object)
+        .and_then(|object| object.get(key))
+        .and_then(|value| {
+            value
+                .as_i64()
+                .or_else(|| value.as_u64().and_then(|number| i64::try_from(number).ok()))
+        })
+}
+
+fn usage_dimension_string(metadata: Option<&Value>, key: &str) -> Option<String> {
+    metadata
+        .and_then(Value::as_object)
+        .and_then(|object| object.get("dimensions"))
+        .and_then(Value::as_object)
+        .and_then(|object| object.get(key))
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToOwned::to_owned)
+}
+
+fn set_usage_dimension_if_absent(data: &mut UsageEventData, key: &str, value: Value) {
+    let mut metadata = match data.request_metadata.take() {
+        Some(Value::Object(object)) => object,
+        _ => Map::new(),
+    };
+    let mut dimensions = match metadata.remove("dimensions") {
+        Some(Value::Object(object)) => object,
+        _ => Map::new(),
+    };
+    dimensions.entry(key.to_string()).or_insert(value);
+    metadata.insert("dimensions".to_string(), Value::Object(dimensions));
+    data.request_metadata = Some(Value::Object(metadata));
+}
+
+fn image_response_count(value: Option<&Value>) -> Option<i64> {
+    let value = value?;
+    value
+        .get("data")
+        .and_then(Value::as_array)
+        .map(|items| items.len() as i64)
+        .filter(|count| *count > 0)
+        .or_else(|| image_result_count(value.get("result")))
+}
+
+fn image_result_count(value: Option<&Value>) -> Option<i64> {
+    match value? {
+        Value::Array(items) => Some(items.len() as i64).filter(|count| *count > 0),
+        Value::Object(object) if !object.is_empty() => Some(1),
+        Value::String(text) if !text.trim().is_empty() => Some(1),
+        _ => None,
+    }
+}
+
+fn image_request_count(value: Option<&Value>) -> Option<i64> {
+    value
+        .and_then(|value| value.get("n"))
+        .and_then(|value| {
+            value
+                .as_i64()
+                .or_else(|| value.as_u64().and_then(|number| i64::try_from(number).ok()))
+        })
+        .filter(|count| *count > 0)
+}
+
+fn image_request_string(value: Option<&Value>, key: &str) -> Option<String> {
+    value
+        .and_then(|value| value.get(key))
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToOwned::to_owned)
 }
 
 fn usage_event_data_is_image(data: &UsageEventData) -> bool {
@@ -3788,6 +3893,144 @@ mod tests {
                 .and_then(|dimensions| dimensions.get("image_count"))
                 .and_then(Value::as_i64),
             Some(1)
+        );
+    }
+
+    #[test]
+    fn sync_completed_openai_image_usage_infers_image_dimensions_from_response() {
+        let request_body = json!({
+            "model": "gpt-image-2",
+            "prompt": "draw a small red cube on a clean desk",
+            "size": "1024x1024",
+            "quality": "medium",
+            "output_format": "png"
+        });
+        let plan = ExecutionPlan {
+            request_id: "req-image-sync-completed-dimensions-1".to_string(),
+            candidate_id: Some("cand-image-sync-completed-dimensions-1".to_string()),
+            provider_name: Some("OpenAI".to_string()),
+            provider_id: "provider-1".to_string(),
+            endpoint_id: "endpoint-1".to_string(),
+            key_id: "key-1".to_string(),
+            method: "POST".to_string(),
+            url: "https://example.com/v1/images/generations".to_string(),
+            headers: BTreeMap::new(),
+            content_type: Some("application/json".to_string()),
+            content_encoding: None,
+            body: RequestBody::from_json(request_body.clone()),
+            stream: false,
+            client_api_format: "openai:image".to_string(),
+            provider_api_format: "openai:image".to_string(),
+            model_name: Some("gpt-image-2".to_string()),
+            proxy: None,
+            transport_profile: None,
+            timeouts: None,
+        };
+        let payload = GatewaySyncReportRequest {
+            trace_id: "trace-image-sync-completed-dimensions-1".to_string(),
+            report_kind: "openai_image_sync_success".to_string(),
+            report_context: Some(json!({
+                "client_api_format": "openai:image",
+                "provider_api_format": "openai:image",
+                "provider_request_body": request_body
+            })),
+            status_code: 200,
+            headers: BTreeMap::new(),
+            body_json: Some(json!({
+                "created": 1_700_000_000,
+                "data": [{ "b64_json": "abc" }]
+            })),
+            client_body_json: None,
+            body_base64: None,
+            telemetry: None,
+        };
+
+        let event =
+            build_sync_terminal_usage_event(&plan, payload.report_context.as_ref(), &payload)
+                .expect("usage event should build");
+
+        let dimensions = event
+            .data
+            .request_metadata
+            .as_ref()
+            .and_then(|metadata| metadata.get("dimensions"))
+            .expect("dimensions should exist");
+        assert_eq!(event.event_type, UsageEventType::Completed);
+        assert!(event.data.input_tokens.unwrap_or_default() > 0);
+        assert_eq!(dimensions.get("image_count"), Some(&json!(1)));
+        assert_eq!(dimensions.get("image_size"), Some(&json!("1024x1024")));
+        assert_eq!(dimensions.get("image_quality"), Some(&json!("medium")));
+        assert_eq!(dimensions.get("image_output_format"), Some(&json!("png")));
+    }
+
+    #[test]
+    fn sync_completed_openai_image_usage_preserves_native_usage_with_image_count() {
+        let request_body = json!({
+            "model": "gpt-image-2",
+            "prompt": "draw a small red cube on a clean desk",
+            "size": "1024x1024",
+            "quality": "medium"
+        });
+        let plan = ExecutionPlan {
+            request_id: "req-image-sync-native-usage-1".to_string(),
+            candidate_id: Some("cand-image-sync-native-usage-1".to_string()),
+            provider_name: Some("OpenAI".to_string()),
+            provider_id: "provider-1".to_string(),
+            endpoint_id: "endpoint-1".to_string(),
+            key_id: "key-1".to_string(),
+            method: "POST".to_string(),
+            url: "https://example.com/v1/images/generations".to_string(),
+            headers: BTreeMap::new(),
+            content_type: Some("application/json".to_string()),
+            content_encoding: None,
+            body: RequestBody::from_json(request_body.clone()),
+            stream: false,
+            client_api_format: "openai:image".to_string(),
+            provider_api_format: "openai:image".to_string(),
+            model_name: Some("gpt-image-2".to_string()),
+            proxy: None,
+            transport_profile: None,
+            timeouts: None,
+        };
+        let payload = GatewaySyncReportRequest {
+            trace_id: "trace-image-sync-native-usage-1".to_string(),
+            report_kind: "openai_image_sync_success".to_string(),
+            report_context: Some(json!({
+                "client_api_format": "openai:image",
+                "provider_api_format": "openai:image",
+                "provider_request_body": request_body
+            })),
+            status_code: 200,
+            headers: BTreeMap::new(),
+            body_json: Some(json!({
+                "usage": {
+                    "input_tokens": 11,
+                    "output_tokens": 22,
+                    "total_tokens": 33
+                },
+                "data": [{ "b64_json": "abc" }]
+            })),
+            client_body_json: None,
+            body_base64: None,
+            telemetry: None,
+        };
+
+        let event =
+            build_sync_terminal_usage_event(&plan, payload.report_context.as_ref(), &payload)
+                .expect("usage event should build");
+
+        assert_eq!(event.event_type, UsageEventType::Completed);
+        assert_eq!(event.data.input_tokens, Some(11));
+        assert_eq!(event.data.output_tokens, Some(22));
+        assert_eq!(event.data.total_tokens, Some(33));
+        assert_eq!(
+            event
+                .data
+                .request_metadata
+                .as_ref()
+                .and_then(|metadata| metadata.get("dimensions"))
+                .and_then(|dimensions| dimensions.get("image_count")),
+            Some(&json!(1))
         );
     }
 
