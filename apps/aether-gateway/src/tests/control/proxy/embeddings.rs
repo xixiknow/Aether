@@ -194,7 +194,7 @@ fn vertex_gemini_embedding_conversion_execution_runtime() -> Router {
         "/v1/execute/sync",
         any(|Json(plan): Json<ExecutionPlan>| async move {
             assert_openai_to_vertex_gemini_embedding_execution_plan(&plan);
-            Json(gemini_embedding_execution_result(&plan))
+            Json(vertex_gemini_embedding_execution_result(&plan))
         }),
     )
 }
@@ -342,7 +342,7 @@ fn assert_openai_to_vertex_gemini_embedding_execution_plan(plan: &ExecutionPlan)
     assert_eq!(plan.method, "POST");
     assert_eq!(
         plan.url,
-        "https://aiplatform.googleapis.com/v1/publishers/google/models/gemini-embedding-2:embedContent?key=sk-upstream-vertex-gemini-embedding"
+        "https://aiplatform.googleapis.com/v1/publishers/google/models/gemini-embedding-2:predict?key=sk-upstream-vertex-gemini-embedding"
     );
     assert_eq!(
         plan.model_name.as_deref(),
@@ -352,9 +352,10 @@ fn assert_openai_to_vertex_gemini_embedding_execution_plan(plan: &ExecutionPlan)
     let body = plan.body.json_body.as_ref().expect("json request body");
     assert!(
         body.get("model").is_none(),
-        "Vertex embedContent carries the model in the path; the body must not repeat it"
+        "Vertex predict carries the model in the path; the body must not repeat it"
     );
-    assert_eq!(body["content"]["parts"][0]["text"], "hello");
+    assert_eq!(body["instances"][0]["content"], "hello");
+    assert!(body.get("content").is_none());
     assert!(body.get("input").is_none());
     assert!(body.get("messages").is_none());
 }
@@ -445,6 +446,30 @@ fn gemini_embedding_execution_result(plan: &ExecutionPlan) -> ExecutionResult {
                     "promptTokenCount": 4,
                     "totalTokenCount": 4
                 }
+            })),
+            body_bytes_b64: None,
+        }),
+        telemetry: None,
+        error: None,
+    }
+}
+
+fn vertex_gemini_embedding_execution_result(plan: &ExecutionPlan) -> ExecutionResult {
+    ExecutionResult {
+        request_id: plan.request_id.clone(),
+        candidate_id: plan.candidate_id.clone(),
+        status_code: 200,
+        headers: BTreeMap::from([("content-type".to_string(), "application/json".to_string())]),
+        body: Some(ResponseBody {
+            json_body: Some(json!({
+                "predictions": [
+                    {
+                        "embeddings": {
+                            "values": [0.1, 0.2, 0.3]
+                        }
+                    }
+                ],
+                "deployedModelId": "gemini-embedding-2"
             })),
             body_bytes_b64: None,
         }),
@@ -636,7 +661,7 @@ async fn embeddings_route_converts_openai_payload_to_vertex_gemini_embedding_pro
     assert_eq!(endpoint_signature.as_deref(), Some("openai:embedding"));
     let payload: serde_json::Value = serde_json::from_str(&body_text).expect("body should parse");
     assert_eq!(payload["object"], "list");
-    assert_eq!(payload["model"], "gemini-embedding-2-preview");
+    assert_eq!(payload["model"], "gemini-embedding-2");
     assert_eq!(payload["data"][0]["embedding"], json!([0.1, 0.2, 0.3]));
 
     gateway_handle.abort();

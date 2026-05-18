@@ -11,7 +11,9 @@ pub fn from(body_json: &Value) -> Option<CanonicalEmbeddingResponse> {
         return None;
     }
 
-    let embeddings = if let Some(values) = body
+    let embeddings = if let Some(raw_embeddings) = vertex_predict_embeddings(body) {
+        raw_embeddings
+    } else if let Some(values) = body
         .get("embedding")
         .and_then(Value::as_object)
         .and_then(|embedding| embedding.get("values"))
@@ -56,6 +58,7 @@ pub fn from(body_json: &Value) -> Option<CanonicalEmbeddingResponse> {
         model: body
             .get("model")
             .or_else(|| body.get("modelVersion"))
+            .or_else(|| body.get("deployedModelId"))
             .and_then(Value::as_str)
             .unwrap_or("unknown")
             .to_string(),
@@ -69,12 +72,34 @@ pub fn from(body_json: &Value) -> Option<CanonicalEmbeddingResponse> {
                 "responseId",
                 "model",
                 "modelVersion",
+                "deployedModelId",
                 "embedding",
                 "embeddings",
+                "predictions",
                 "usageMetadata",
             ],
         ),
     })
+}
+
+fn vertex_predict_embeddings(
+    body: &serde_json::Map<String, Value>,
+) -> Option<Vec<CanonicalEmbedding>> {
+    let predictions = body.get("predictions")?.as_array()?;
+    predictions
+        .iter()
+        .enumerate()
+        .map(|(index, item)| {
+            let item_object = item.as_object()?;
+            let embedding_object = item_object.get("embeddings")?.as_object()?;
+            let values = embedding_object.get("values")?.as_array()?;
+            Some(CanonicalEmbedding {
+                index,
+                embedding: embedding_values(values)?,
+                extensions: namespace_extensions("vertex", item_object, &["embeddings"]),
+            })
+        })
+        .collect()
 }
 
 fn embedding_values(values: &[Value]) -> Option<Vec<f64>> {
@@ -104,5 +129,30 @@ mod tests {
         let usage = parsed.usage.expect("usage should parse");
         assert_eq!(usage.input_tokens, 4);
         assert_eq!(usage.total_tokens, 4);
+    }
+
+    #[test]
+    fn parses_vertex_predict_embedding_response() {
+        let body = json!({
+            "predictions": [
+                {
+                    "embeddings": {
+                        "values": [0.1, 0.2, 0.3]
+                    }
+                },
+                {
+                    "embeddings": {
+                        "values": [0.4, 0.5, 0.6]
+                    }
+                }
+            ],
+            "deployedModelId": "gemini-embedding-2"
+        });
+
+        let parsed = from(&body).expect("response should parse");
+
+        assert_eq!(parsed.model, "gemini-embedding-2");
+        assert_eq!(parsed.embeddings[0].embedding, vec![0.1, 0.2, 0.3]);
+        assert_eq!(parsed.embeddings[1].embedding, vec![0.4, 0.5, 0.6]);
     }
 }

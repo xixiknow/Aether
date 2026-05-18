@@ -241,11 +241,29 @@ pub(crate) async fn resolve_local_standard_candidate_payload_parts(
         upstream_is_stream,
         request_requires_body_stream_field(body_json, force_body_stream_field),
     );
-    apply_transport_request_body_semantics(
+    if let Err(err) = apply_transport_request_body_semantics(
         &mut provider_request_body,
         transport,
         provider_api_format,
-    );
+    ) {
+        mark_skipped_local_standard_candidate_with_failure_diagnostic(
+            state,
+            input,
+            trace_id,
+            candidate,
+            attempt.candidate_index,
+            &attempt.candidate_id,
+            "transport_request_body_semantics_failed",
+            CandidateFailureDiagnostic::request_conversion_failed(
+                spec_metadata.api_format,
+                provider_api_format,
+                "standard_family_transport_body_semantics",
+                err.to_string(),
+            ),
+        )
+        .await;
+        return None;
+    }
     if let Some(mapping) =
         crate::system_features::reasoning_model_directive_mapping_for_api_format_and_model(
             state,
@@ -266,11 +284,29 @@ pub(crate) async fn resolve_local_standard_candidate_payload_parts(
             upstream_is_stream,
             request_requires_body_stream_field(body_json, force_body_stream_field),
         );
-        apply_transport_request_body_semantics(
+        if let Err(err) = apply_transport_request_body_semantics(
             &mut provider_request_body,
             transport,
             provider_api_format,
-        );
+        ) {
+            mark_skipped_local_standard_candidate_with_failure_diagnostic(
+                state,
+                input,
+                trace_id,
+                candidate,
+                attempt.candidate_index,
+                &attempt.candidate_id,
+                "transport_request_body_semantics_failed",
+                CandidateFailureDiagnostic::request_conversion_failed(
+                    spec_metadata.api_format,
+                    provider_api_format,
+                    "standard_family_transport_body_semantics_after_model_directives",
+                    err.to_string(),
+                ),
+            )
+            .await;
+            return None;
+        }
     }
 
     if let Some(kiro_auth) = kiro_auth.as_ref() {
@@ -382,22 +418,12 @@ fn apply_transport_request_body_semantics(
     provider_request_body: &mut Value,
     transport: &GatewayProviderTransportSnapshot,
     provider_api_format: &str,
-) {
-    if !crate::ai_serving::api_format_alias_matches(provider_api_format, "gemini:embedding")
-        || !crate::ai_serving::transport::vertex::is_vertex_transport_context(transport)
-    {
-        return;
-    }
-
-    let Some(object) = provider_request_body.as_object_mut() else {
-        return;
-    };
-
-    if object.contains_key("requests") {
-        return;
-    }
-
-    object.remove("model");
+) -> Result<(), crate::ai_serving::transport::TransportRequestBodySemanticsError> {
+    crate::ai_serving::transport::apply_transport_request_body_semantics(
+        provider_request_body,
+        transport,
+        provider_api_format,
+    )
 }
 
 async fn resolve_local_gemini_image_to_openai_image_candidate_payload_parts(

@@ -2304,7 +2304,7 @@ async fn provider_query_execute_standard_test_candidate(
         }
         "openai:embedding" | "gemini:embedding" | "jina:embedding" | "doubao:embedding"
         | "openai:rerank" | "jina:rerank" => {
-            let Some(provider_request_body) =
+            let Some(mut provider_request_body) =
                 crate::ai_serving::build_standard_request_body_with_model_directives_and_request_headers(
                     &request_body,
                     client_api_format,
@@ -2324,6 +2324,18 @@ async fn provider_query_execute_standard_test_candidate(
                     format!("Provider request body could not be built for {provider_api_format}"),
                 ));
             };
+            if let Err(err) = crate::provider_transport::apply_transport_request_body_semantics(
+                &mut provider_request_body,
+                &transport,
+                normalized_provider_api_format.as_str(),
+            ) {
+                return Ok(provider_query_skipped_execution_outcome(
+                    provider_request_body,
+                    format!(
+                        "Provider request body is not compatible with transport semantics: {err}"
+                    ),
+                ));
+            }
             provider_request_body
         }
         _ => {
@@ -2404,7 +2416,7 @@ async fn provider_query_execute_standard_test_candidate(
     *synthetic_request.headers_mut() = incoming_request_headers;
     let (parts, _) = synthetic_request.into_parts();
 
-    let request_url = crate::provider_transport::build_transport_request_url(
+    let request_url = crate::provider_transport::build_transport_request_url_for_request_body(
         &transport,
         crate::provider_transport::TransportRequestUrlParams {
             provider_api_format,
@@ -2413,6 +2425,7 @@ async fn provider_query_execute_standard_test_candidate(
             request_query: parts.uri.query(),
             kiro_api_region: None,
         },
+        Some(&provider_request_body),
     );
     let Some(request_url) = request_url else {
         return Ok(provider_query_skipped_execution_outcome(

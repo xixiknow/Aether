@@ -14,6 +14,7 @@ pub mod oauth_refresh;
 mod openai_image;
 pub mod policy;
 pub mod provider_types;
+mod request_body;
 mod request_url;
 pub mod rules;
 pub mod same_format_provider;
@@ -68,6 +69,9 @@ pub use policy::{
     local_openai_chat_transport_unsupported_reason, local_standard_transport_unsupported_reason,
     local_standard_transport_unsupported_reason_with_network, supports_local_gemini_transport,
     supports_local_gemini_transport_with_network, supports_local_standard_transport,
+};
+pub use request_body::{
+    apply_transport_request_body_semantics, TransportRequestBodySemanticsError,
 };
 pub use request_url::{
     build_cross_format_openai_chat_upstream_url, build_cross_format_openai_responses_upstream_url,

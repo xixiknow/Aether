@@ -40,7 +40,7 @@ pub fn build_vertex_api_key_gemini_embedding_url(
     api_key: &str,
     request_query: Option<&str>,
 ) -> Option<String> {
-    build_vertex_api_key_google_model_url(model, "embedContent", false, api_key, request_query)
+    build_vertex_api_key_google_model_url(model, "predict", false, api_key, request_query)
 }
 
 pub fn build_vertex_service_account_gemini_content_url(
@@ -64,7 +64,7 @@ pub fn build_vertex_service_account_gemini_embedding_url(
 ) -> Option<String> {
     build_vertex_service_account_google_model_url(
         model,
-        "embedContent",
+        "predict",
         false,
         auth_config,
         request_query,

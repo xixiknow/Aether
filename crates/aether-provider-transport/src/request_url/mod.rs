@@ -19,8 +19,8 @@ use crate::url::{
 use crate::vertex::{
     build_vertex_api_key_gemini_content_url, build_vertex_api_key_gemini_embedding_url,
     build_vertex_service_account_gemini_content_url,
-    build_vertex_service_account_gemini_embedding_url, is_vertex_transport_context,
-    resolve_local_vertex_api_key_query_auth, resolve_local_vertex_service_account_auth_config,
+    build_vertex_service_account_gemini_embedding_url, resolve_local_vertex_api_key_query_auth,
+    resolve_local_vertex_service_account_auth_config,
 };
 
 #[derive(Debug, Clone, Copy)]
@@ -68,13 +68,6 @@ fn build_transport_request_url_inner(
     let provider_api_format = params.provider_api_format.trim().to_ascii_lowercase();
     let normalized_provider_api_format =
         aether_ai_formats::normalize_api_format_alias(&provider_api_format);
-    if normalized_provider_api_format == "gemini:embedding"
-        && gemini_embedding_batch
-        && is_vertex_transport_context(transport)
-    {
-        return None;
-    }
-
     if let Some(url) = build_transport_hook_url(transport, params) {
         return Some(url);
     }
@@ -696,12 +689,12 @@ mod tests {
 
         assert_eq!(
             url,
-            "https://aiplatform.googleapis.com/v1/projects/demo-project/locations/global/publishers/google/models/gemini-embedding-2:embedContent?foo=bar"
+            "https://aiplatform.googleapis.com/v1/projects/demo-project/locations/global/publishers/google/models/gemini-embedding-2:predict?foo=bar"
         );
     }
 
     #[test]
-    fn vertex_gemini_embedding_batch_request_does_not_use_gemini_api_batch_endpoint() {
+    fn vertex_gemini_embedding_batch_request_uses_vertex_predict_endpoint() {
         let mut transport = sample_transport(
             "vertex_ai",
             "gemini:embedding",
@@ -729,18 +722,23 @@ mod tests {
             ]
         });
 
-        assert!(build_transport_request_url_for_request_body(
-            &transport,
-            TransportRequestUrlParams {
-                provider_api_format: "gemini:embedding",
-                mapped_model: Some("gemini-embedding-2"),
-                upstream_is_stream: false,
-                request_query: None,
-                kiro_api_region: None,
-            },
-            Some(&batch_body),
-        )
-        .is_none());
+        assert_eq!(
+            build_transport_request_url_for_request_body(
+                &transport,
+                TransportRequestUrlParams {
+                    provider_api_format: "gemini:embedding",
+                    mapped_model: Some("gemini-embedding-2"),
+                    upstream_is_stream: false,
+                    request_query: None,
+                    kiro_api_region: None,
+                },
+                Some(&batch_body),
+            )
+            .as_deref(),
+            Some(
+                "https://aiplatform.googleapis.com/v1/projects/demo-project/locations/global/publishers/google/models/gemini-embedding-2:predict"
+            )
+        );
     }
 
     #[test]

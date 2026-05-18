@@ -51,7 +51,8 @@ pub(crate) use aether_provider_transport::{
     apply_local_body_rules_with_request_headers, apply_local_header_rules,
     apply_local_header_rules_with_request_headers, apply_standard_provider_request_body_rules,
     apply_standard_provider_request_body_rules_with_request_headers,
-    body_rules_are_locally_supported, body_rules_handle_path, body_rules_have_enabled_rules,
+    apply_transport_request_body_semantics, body_rules_are_locally_supported,
+    body_rules_handle_path, body_rules_have_enabled_rules,
     build_cross_format_openai_chat_upstream_url, build_cross_format_openai_responses_upstream_url,
     build_gemini_files_headers, build_gemini_files_request_body, build_gemini_files_upstream_url,
     build_kiro_cross_format_upstream_url, build_local_openai_chat_upstream_url,
@@ -89,5 +90,6 @@ pub(crate) use aether_provider_transport::{
     SameFormatProviderRequestBehaviorParams, SameFormatProviderRequestBodyInput,
     SameFormatProviderUpstreamUrlParams, StandardPlanFallbackAcceptPolicy,
     StandardPlanFallbackHeadersInput, StandardProviderRequestHeaders,
-    StandardProviderRequestHeadersInput, TransportRequestUrlParams,
+    StandardProviderRequestHeadersInput, TransportRequestBodySemanticsError,
+    TransportRequestUrlParams,
 };
