@@ -1396,7 +1396,7 @@ fn usage_reporting_does_not_log_raw_report_context() {
 
 #[test]
 fn proxy_registration_client_does_not_log_raw_management_response_body() {
-    let source = read_workspace_file("apps/aether-proxy/src/registration/client.rs");
+    let source = read_workspace_file("apps/aether-tunnel/src/registration/client.rs");
     assert!(
         !source.contains("error!(body = %text"),
         "registration/client.rs should not log raw management response bodies"

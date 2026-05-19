@@ -229,7 +229,7 @@ fn log_stream_success(ctx: StreamLogContext<'_>, status: u16, duration: Duration
             request_body_bytes = ctx.request_body_size,
             slow,
             sampled,
-            "proxy request completed"
+            "tunnel request completed"
         );
     } else {
         debug!(
@@ -247,7 +247,7 @@ fn log_stream_success(ctx: StreamLogContext<'_>, status: u16, duration: Duration
             request_body_bytes = ctx.request_body_size,
             slow,
             sampled,
-            "proxy request completed"
+            "tunnel request completed"
         );
     }
 }
@@ -268,7 +268,7 @@ fn log_stream_failure(ctx: StreamLogContext<'_>, error: &str, duration: Duration
                 duration_ms = duration.as_millis() as u64,
                 redirect_count = ctx.redirect_count,
                 request_body_bytes = ctx.request_body_size,
-                "proxy request failed"
+                "tunnel request failed"
             );
         }
         None => {
@@ -280,7 +280,7 @@ fn log_stream_failure(ctx: StreamLogContext<'_>, error: &str, duration: Duration
                 duration_ms = duration.as_millis() as u64,
                 redirect_count = ctx.redirect_count,
                 request_body_bytes = ctx.request_body_size,
-                "proxy request failed"
+                "tunnel request failed"
             );
         }
     }
@@ -1157,9 +1157,9 @@ pub async fn handle_stream(
         Ok(permit) => permit,
         Err(err) => {
             let message = match err {
-                crate::state::ProxyAdmissionError::Saturated { .. } => "proxy overloaded",
-                crate::state::ProxyAdmissionError::Unavailable { .. } => {
-                    "proxy admission unavailable"
+                crate::state::TunnelAdmissionError::Saturated { .. } => "tunnel overloaded",
+                crate::state::TunnelAdmissionError::Unavailable { .. } => {
+                    "tunnel admission unavailable"
                 }
             };
             log_stream_failure(
@@ -1654,7 +1654,7 @@ mod tests {
     use crate::config::Config;
     use crate::registration::client::AetherClient;
     use crate::runtime::DynamicConfig;
-    use crate::state::{ProxyMetrics, TunnelMetrics};
+    use crate::state::{TunnelMetrics, TunnelRequestMetrics};
     use crate::target_filter::DnsCache;
     use crate::tunnel::client::build_tls_config;
 
@@ -2335,7 +2335,7 @@ mod tests {
 
     #[tokio::test]
     async fn rejects_stream_when_local_admission_gate_is_saturated() {
-        let gate = Arc::new(ConcurrencyGate::new("proxy_streams", 1));
+        let gate = Arc::new(ConcurrencyGate::new("tunnel_streams", 1));
         let _permit = gate.try_acquire().expect("first permit");
         let state = sample_state(Some(gate), None);
         let server = sample_server(&state);
@@ -2359,7 +2359,7 @@ mod tests {
             .expect("overload frame");
         assert_eq!(frame.stream_id, 7);
         assert_eq!(frame.msg_type, MsgType::StreamError);
-        assert_eq!(frame.payload, Bytes::from_static(b"proxy overloaded"));
+        assert_eq!(frame.payload, Bytes::from_static(b"tunnel overloaded"));
         assert_eq!(
             state
                 .stream_gate
@@ -2376,7 +2376,7 @@ mod tests {
         let gate = Arc::new(
             RuntimeState::memory(MemoryRuntimeStateConfig::default())
                 .semaphore(
-                    "proxy_streams_distributed",
+                    "tunnel_streams_distributed",
                     1,
                     RuntimeSemaphoreConfig::default(),
                 )
@@ -2405,7 +2405,7 @@ mod tests {
             .expect("overload frame");
         assert_eq!(frame.stream_id, 9);
         assert_eq!(frame.msg_type, MsgType::StreamError);
-        assert_eq!(frame.payload, Bytes::from_static(b"proxy overloaded"));
+        assert_eq!(frame.payload, Bytes::from_static(b"tunnel overloaded"));
         assert_eq!(
             state
                 .distributed_stream_gate
@@ -2500,7 +2500,7 @@ mod tests {
             )),
             dynamic: Arc::new(ArcSwap::from_pointee(DynamicConfig::from_config(&config))),
             active_connections: Arc::new(AtomicU64::new(0)),
-            metrics: Arc::new(ProxyMetrics::new()),
+            metrics: Arc::new(TunnelRequestMetrics::new()),
             tunnel_metrics: Arc::new(TunnelMetrics::new()),
         })
     }
@@ -2510,7 +2510,7 @@ mod tests {
             aether_url: "https://aether.example.com".to_string(),
             management_token: "token".to_string(),
             public_ip: None,
-            node_name: "proxy-test".to_string(),
+            node_name: "tunnel-test".to_string(),
             node_region: None,
             heartbeat_interval: 30,
             allowed_ports: vec![80, 443],
@@ -2522,7 +2522,7 @@ mod tests {
             aether_tcp_keepalive_secs: 60,
             aether_tcp_nodelay: true,
             aether_http2: true,
-            aether_proxy_url: None,
+            aether_outbound_proxy_url: None,
             aether_retry_max_attempts: 3,
             aether_retry_base_delay_ms: 200,
             aether_retry_max_delay_ms: 2_000,
@@ -2546,9 +2546,9 @@ mod tests {
             redirect_replay_budget_bytes: crate::config::DEFAULT_REDIRECT_REPLAY_BUDGET_BYTES,
             emit_proxy_timing_header: true,
             log_level: "info".to_string(),
-            log_destination: crate::config::ProxyLogDestinationArg::Stdout,
+            log_destination: crate::config::TunnelLogDestinationArg::Stdout,
             log_dir: None,
-            log_rotation: crate::config::ProxyLogRotationArg::Daily,
+            log_rotation: crate::config::TunnelLogRotationArg::Daily,
             log_retention_days: 7,
             log_max_files: 30,
             tunnel_reconnect_base_ms: 500,

@@ -22,7 +22,7 @@ use crate::config::{Config, ServerEntry, TunnelPoolSizing};
 use crate::net;
 use crate::registration::client::AetherClient;
 use crate::runtime::{self, DynamicConfig};
-use crate::state::{AppState, ProxyMetrics, ServerContext, TunnelMetrics};
+use crate::state::{AppState, ServerContext, TunnelMetrics, TunnelRequestMetrics};
 use crate::upstream_client;
 use crate::{hardware, target_filter, tunnel};
 
@@ -99,12 +99,12 @@ pub async fn run(mut config: Config, servers: Vec<ServerEntry>) -> anyhow::Resul
         version = env!("CARGO_PKG_VERSION"),
         node_name = %config.node_name,
         server_count = servers.len(),
-        "aether-proxy starting (tunnel mode)"
+        "aether-tunnel starting (tunnel mode)"
     );
-    if let Some(proxy_url) = config.effective_aether_proxy_url() {
+    if let Some(proxy_url) = config.effective_aether_outbound_proxy_url() {
         if let Ok(proxy) = crate::egress_proxy::UpstreamProxyConfig::parse(proxy_url) {
             info!(
-                aether_proxy_url = %proxy.redacted_url(),
+                aether_outbound_proxy_url = %proxy.redacted_url(),
                 "Aether control and tunnel egress proxy configured"
             );
         }
@@ -258,7 +258,7 @@ pub async fn run(mut config: Config, servers: Vec<ServerEntry>) -> anyhow::Resul
     };
     if let Some(limit) = state.config.max_in_flight_streams {
         state = state
-            .with_stream_concurrency_gate(Arc::new(ConcurrencyGate::new("proxy_streams", limit)));
+            .with_stream_concurrency_gate(Arc::new(ConcurrencyGate::new("tunnel_streams", limit)));
     }
     if let Some(limit) = state.config.distributed_stream_limit {
         let redis_url = state
@@ -275,7 +275,7 @@ pub async fn run(mut config: Config, servers: Vec<ServerEntry>) -> anyhow::Resul
         )
         .await?;
         let distributed_gate = runtime.semaphore(
-            "proxy_streams_distributed",
+            "tunnel_streams_distributed",
             limit,
             RuntimeSemaphoreConfig {
                 lease_ttl_ms: state.config.distributed_stream_lease_ttl_ms,
@@ -363,7 +363,7 @@ pub async fn run(mut config: Config, servers: Vec<ServerEntry>) -> anyhow::Resul
     // Wait for all tunnel tasks
     await_all_handles(&tunnel_handles).await;
 
-    info!("aether-proxy stopped");
+    info!("aether-tunnel stopped");
     Ok(())
 }
 
@@ -379,7 +379,7 @@ fn spawn_diagnostics_server(
         .route("/stats", get(diagnostics_stats))
         .with_state(diagnostics_state);
 
-    info!(bind = %bind_addr, "proxy diagnostics server listening");
+    info!(bind = %bind_addr, "tunnel diagnostics server listening");
     Ok(tokio::spawn(async move {
         let graceful_shutdown = async move {
             while !*shutdown.borrow() {
@@ -392,7 +392,7 @@ fn spawn_diagnostics_server(
             .with_graceful_shutdown(graceful_shutdown)
             .await
         {
-            error!(error = %error, "proxy diagnostics server exited with error");
+            error!(error = %error, "tunnel diagnostics server exited with error");
         }
     }))
 }
@@ -414,7 +414,7 @@ async fn diagnostics_health(
 
     Json(serde_json::json!({
         "status": "ok",
-        "service": "aether-proxy",
+        "service": "aether-tunnel",
         "version": env!("CARGO_PKG_VERSION"),
         "protocol_version": aether_contracts::tunnel::CURRENT_TUNNEL_PROTOCOL_VERSION,
         "server_count": servers.len(),
@@ -456,7 +456,7 @@ async fn diagnostics_stats(
 
     Json(serde_json::json!({
         "status": "ok",
-        "service": "aether-proxy",
+        "service": "aether-tunnel",
         "version": env!("CARGO_PKG_VERSION"),
         "protocol_version": aether_contracts::tunnel::CURRENT_TUNNEL_PROTOCOL_VERSION,
         "capacities": {
@@ -485,7 +485,7 @@ fn diagnostics_server_stats(server: &ServerContext) -> serde_json::Value {
         "node_id": node_id,
         "node_name": dynamic.node_name.clone(),
         "active_connections": server.active_connections.load(Ordering::Acquire),
-        "proxy_metrics": server.metrics.snapshot(),
+        "request_metrics": server.metrics.snapshot(),
         "tunnel_metrics": server.tunnel_metrics.snapshot(),
         "recent_tunnel_errors": server.tunnel_metrics.recent_errors(16),
     })
@@ -686,7 +686,7 @@ fn build_server_context(
         aether_client: client,
         dynamic: Arc::new(ArcSwap::from_pointee(dynamic)),
         active_connections: Arc::new(AtomicU64::new(0)),
-        metrics: Arc::new(ProxyMetrics::new()),
+        metrics: Arc::new(TunnelRequestMetrics::new()),
         tunnel_metrics: Arc::new(TunnelMetrics::new()),
     })
 }
@@ -938,9 +938,9 @@ fn init_tracing(config: &Config) {
         &config.log_level,
         config
             .service_runtime_config()
-            .expect("proxy service runtime config should be valid"),
+            .expect("tunnel service runtime config should be valid"),
     )
-    .expect("proxy tracing should initialize");
+    .expect("tunnel tracing should initialize");
     runtime::set_log_reloader(reloader);
 }
 
@@ -962,10 +962,10 @@ mod tests {
     use serde_json::json;
 
     use crate::config::{
-        ProxyLogDestinationArg, ProxyLogRotationArg, DEFAULT_REDIRECT_REPLAY_BUDGET_BYTES,
+        TunnelLogDestinationArg, TunnelLogRotationArg, DEFAULT_REDIRECT_REPLAY_BUDGET_BYTES,
     };
     use crate::hardware::HardwareInfo;
-    use crate::state::AppState as ProxyAppState;
+    use crate::state::AppState as TunnelAppState;
     use crate::target_filter::DnsCache;
 
     use super::*;
@@ -1064,7 +1064,7 @@ mod tests {
             .await
             .expect("health response should parse");
         assert_eq!(health["status"], "ok");
-        assert_eq!(health["service"], "aether-proxy");
+        assert_eq!(health["service"], "aether-tunnel");
         assert_eq!(health["server_count"], 1);
 
         let metrics = client
@@ -1077,8 +1077,8 @@ mod tests {
             .text()
             .await
             .expect("metrics response should read");
-        assert!(metrics.contains("service_up{service=\"aether-proxy\"} 1"));
-        assert!(metrics.contains("proxy_active_connections{server=\"server\"} 0"));
+        assert!(metrics.contains("service_up{service=\"aether-tunnel\"} 1"));
+        assert!(metrics.contains("tunnel_active_connections{server=\"server\"} 0"));
 
         let stats: serde_json::Value = client
             .get(format!("{base_url}/stats"))
@@ -1264,12 +1264,12 @@ mod tests {
         }
     }
 
-    fn sample_state(config: Config) -> Arc<ProxyAppState> {
+    fn sample_state(config: Config) -> Arc<TunnelAppState> {
         let config = Arc::new(config);
         let dns_cache = Arc::new(DnsCache::new(Duration::from_secs(60), 128));
         let upstream_client_pool =
             upstream_client::UpstreamClientPool::new(Arc::clone(&config), Arc::clone(&dns_cache));
-        Arc::new(ProxyAppState {
+        Arc::new(TunnelAppState {
             config,
             dns_cache,
             upstream_client_pool,
@@ -1281,7 +1281,7 @@ mod tests {
     }
 
     fn sample_registered_server(
-        state: &Arc<ProxyAppState>,
+        state: &Arc<TunnelAppState>,
         label: &str,
         node_id: &str,
     ) -> Arc<ServerContext> {
@@ -1310,7 +1310,7 @@ mod tests {
             aether_url: aether_url.to_string(),
             management_token: "token".to_string(),
             public_ip: None,
-            node_name: "proxy-test".to_string(),
+            node_name: "tunnel-test".to_string(),
             node_region: None,
             heartbeat_interval: 1,
             allowed_ports: vec![80, 443],
@@ -1322,7 +1322,7 @@ mod tests {
             aether_tcp_keepalive_secs: 60,
             aether_tcp_nodelay: true,
             aether_http2: true,
-            aether_proxy_url: None,
+            aether_outbound_proxy_url: None,
             aether_retry_max_attempts: 1,
             aether_retry_base_delay_ms: 50,
             aether_retry_max_delay_ms: 100,
@@ -1346,9 +1346,9 @@ mod tests {
             redirect_replay_budget_bytes: DEFAULT_REDIRECT_REPLAY_BUDGET_BYTES,
             emit_proxy_timing_header: true,
             log_level: "info".to_string(),
-            log_destination: ProxyLogDestinationArg::Stdout,
+            log_destination: TunnelLogDestinationArg::Stdout,
             log_dir: None,
-            log_rotation: ProxyLogRotationArg::Daily,
+            log_rotation: TunnelLogRotationArg::Daily,
             log_retention_days: 7,
             log_max_files: 30,
             tunnel_reconnect_base_ms: 50,

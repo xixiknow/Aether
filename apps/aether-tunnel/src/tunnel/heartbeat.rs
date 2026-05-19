@@ -13,7 +13,7 @@ use tracing::{debug, info, warn};
 
 use crate::registration::client::RemoteConfig;
 use crate::runtime;
-use crate::state::{AppState, ProxyMetricsSnapshot, ServerContext};
+use crate::state::{AppState, ServerContext, TunnelRequestMetricsSnapshot};
 
 use super::protocol::{Frame, MsgType};
 use super::writer::FrameSender;
@@ -53,15 +53,15 @@ pub fn spawn_noop() -> HeartbeatHandle {
 
 #[derive(Debug, Clone, Copy, Default)]
 struct HeartbeatSnapshot {
-    cumulative: ProxyMetricsSnapshot,
-    window: ProxyMetricsSnapshot,
+    cumulative: TunnelRequestMetricsSnapshot,
+    window: TunnelRequestMetricsSnapshot,
 }
 
 #[derive(Debug, Clone, Copy)]
 struct PendingHeartbeat {
     heartbeat_id: u64,
     snapshot: HeartbeatSnapshot,
-    cumulative: ProxyMetricsSnapshot,
+    cumulative: TunnelRequestMetricsSnapshot,
     sent_at: Option<Instant>,
 }
 
@@ -82,7 +82,7 @@ pub fn spawn(
         // We keep the last ACKed cumulative snapshot so each payload can
         // report both monotonic totals and the delta since the previous ACK.
         let mut pending: Option<PendingHeartbeat> = None;
-        let mut last_acked_snapshot = ProxyMetricsSnapshot::default();
+        let mut last_acked_snapshot = TunnelRequestMetricsSnapshot::default();
         let mut next_heartbeat_id: u64 = 1;
         let heartbeat_session_id = format!(
             "{}-{}",
@@ -342,7 +342,10 @@ fn normalize_upgrade_target(raw: String) -> Option<String> {
     if trimmed.is_empty() {
         return None;
     }
-    let normalized = trimmed.strip_prefix("proxy-v").unwrap_or(trimmed);
+    let normalized = trimmed
+        .strip_prefix("tunnel-v")
+        .or_else(|| trimmed.strip_prefix("proxy-v"))
+        .unwrap_or(trimmed);
     if normalized == CURRENT_VERSION {
         return None;
     }
@@ -402,17 +405,17 @@ mod tests {
     use super::{build_heartbeat_payload, handle_ack, AckDecision, HeartbeatSnapshot};
     use crate::registration::client::AetherClient;
     use crate::runtime::DynamicConfig;
-    use crate::state::{AppState, ProxyMetrics, ServerContext, TunnelMetrics};
+    use crate::state::{AppState, ServerContext, TunnelMetrics, TunnelRequestMetrics};
 
     fn sample_config() -> Arc<crate::config::Config> {
         Arc::new(crate::config::Config::parse_from([
-            "aether-proxy",
+            "aether-tunnel",
             "--aether-url",
             "https://example.com",
             "--management-token",
             "ae_test",
             "--node-name",
-            "proxy-test",
+            "tunnel-test",
         ]))
     }
 
@@ -431,7 +434,7 @@ mod tests {
             )),
             dynamic: Arc::new(ArcSwap::from_pointee(DynamicConfig::from_config(&config))),
             active_connections: Arc::new(AtomicU64::new(0)),
-            metrics: Arc::new(ProxyMetrics::new()),
+            metrics: Arc::new(TunnelRequestMetrics::new()),
             tunnel_metrics: Arc::new(TunnelMetrics::new()),
         })
     }

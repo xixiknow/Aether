@@ -305,9 +305,9 @@ async fn connect_tunnel_tcp(
     port: u16,
     connect_timeout: Duration,
 ) -> Result<TcpStream, anyhow::Error> {
-    if let Some(proxy_url) = state.config.effective_aether_proxy_url() {
+    if let Some(proxy_url) = state.config.effective_aether_outbound_proxy_url() {
         let proxy = UpstreamProxyConfig::parse(proxy_url)
-            .map_err(|err| anyhow::anyhow!("aether proxy URL invalid: {err}"))?;
+            .map_err(|err| anyhow::anyhow!("Aether outbound proxy URL invalid: {err}"))?;
         debug!(
             proxy_url = %proxy.redacted_url(),
             host = %host,
@@ -331,7 +331,7 @@ async fn connect_tunnel_tcp(
         .await
         .map_err(|_| {
             anyhow::anyhow!(
-                "tunnel proxy TCP connect timeout ({}ms)",
+                "tunnel outbound proxy TCP connect timeout ({}ms)",
                 connect_timeout.as_millis()
             )
         })?

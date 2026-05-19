@@ -1,6 +1,6 @@
 /// Proxy-side WebSocket connection handler
 ///
-/// Handles the lifecycle of a single aether-proxy connection:
+/// Handles the lifecycle of a single aether-tunnel connection:
 /// accept -> authenticate (headers) -> read loop -> cleanup
 use std::sync::Arc;
 use std::time::Duration;
