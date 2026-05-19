@@ -53,7 +53,7 @@ pub(crate) async fn build_admin_provider_endpoints_payload(
             .take(limit)
             .map(|endpoint| {
                 let endpoint_api_format =
-                    aether_ai_formats::normalize_api_format_alias(&endpoint.api_format);
+                    crate::ai_serving::normalize_api_format_alias(&endpoint.api_format);
                 build_admin_provider_endpoint_response(
                     &endpoint,
                     &provider.name,
@@ -105,7 +105,7 @@ pub(crate) async fn build_admin_endpoint_payload(
         .ok()
         .map(|duration| duration.as_secs())
         .unwrap_or(0);
-    let endpoint_api_format = aether_ai_formats::normalize_api_format_alias(&endpoint.api_format);
+    let endpoint_api_format = crate::ai_serving::normalize_api_format_alias(&endpoint.api_format);
 
     Some(build_admin_provider_endpoint_response(
         &endpoint,

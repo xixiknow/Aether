@@ -152,7 +152,7 @@ pub(super) async fn maybe_handle(
         std::slice::from_ref(&updated),
         &keys,
     );
-    let updated_api_format = aether_ai_formats::normalize_api_format_alias(&updated.api_format);
+    let updated_api_format = crate::ai_serving::normalize_api_format_alias(&updated.api_format);
 
     Ok(Some(
         Json(build_admin_provider_endpoint_response(
