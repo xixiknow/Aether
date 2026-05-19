@@ -95,7 +95,6 @@ pub(crate) use aether_provider_transport::{
     SameFormatProviderRequestBehaviorParams, SameFormatProviderRequestBodyInput,
     SameFormatProviderUpstreamUrlParams, StandardPlanFallbackAcceptPolicy,
     StandardPlanFallbackHeadersInput, StandardProviderRequestHeaders,
-    StandardProviderRequestHeadersInput, TransportRequestUrlParams, GROK_CHAT_PATH,
-    GROK_INTERNAL_HEADER, GROK_RATE_LIMITS_PATH,
-    TransportRequestBodySemanticsError,
+    StandardProviderRequestHeadersInput, TransportRequestBodySemanticsError,
+    TransportRequestUrlParams, GROK_CHAT_PATH, GROK_INTERNAL_HEADER, GROK_RATE_LIMITS_PATH,
 };

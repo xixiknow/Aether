@@ -3356,7 +3356,10 @@ mod tests {
             "gemma-4-31b-it"
         );
         assert_eq!(payload["scheduling_failure"]["candidate_count"], 1);
-        assert_eq!(payload["scheduling_failure"]["persisted_candidate_count"], 0);
+        assert_eq!(
+            payload["scheduling_failure"]["persisted_candidate_count"],
+            0
+        );
         assert_eq!(payload["scheduling_failure"]["skipped_candidate_count"], 1);
         assert_eq!(
             payload["scheduling_failure"]["skip_reasons"]["provider_quota_blocked"],

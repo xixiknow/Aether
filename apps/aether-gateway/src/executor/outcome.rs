@@ -1053,7 +1053,10 @@ fn insert_runtime_miss_diagnostic_metadata(
         runtime_miss.insert("skip_reasons".to_string(), json!(diagnostic.skip_reasons));
     }
     if let Some(requested_model) = trimmed_non_empty(diagnostic.requested_model.as_deref()) {
-        runtime_miss.insert("requested_model".to_string(), Value::String(requested_model));
+        runtime_miss.insert(
+            "requested_model".to_string(),
+            Value::String(requested_model),
+        );
     }
 
     let mut provider_hint = Map::new();

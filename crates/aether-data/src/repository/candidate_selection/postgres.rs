@@ -1316,9 +1316,8 @@ mod tests {
         ] {
             assert!(sql.contains("LOWER(BTRIM(p.provider_type)) = 'grok'"));
             assert!(sql.contains("LOWER(BTRIM(pak.auth_type)) = 'oauth'"));
-            assert!(
-                sql.contains("'openai:chat', 'openai:responses', 'claude:messages', 'openai:image'")
-            );
+            assert!(sql
+                .contains("'openai:chat', 'openai:responses', 'claude:messages', 'openai:image'"));
             assert!(sql.contains("'grok',"));
         }
     }
