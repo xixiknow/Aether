@@ -406,7 +406,6 @@ fn scheduler_candidate_runtime_paths_depend_on_scheduler_core_and_state_trait() 
         "fn candidate_provider_key_health_bucket(",
         "fn candidate_provider_key_health_score(",
         "count_recent_active_requests_for_provider(",
-        "is_candidate_in_recent_failure_cooldown(",
         "provider_key_health_score(",
         "provider_key_rpm_allows_request_since(",
         "read_recent_request_candidates(128)",

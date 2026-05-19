@@ -423,11 +423,20 @@ export interface FormatHealthData {
 // 按格式的熔断器数据
 export interface FormatCircuitBreakerData {
   open: boolean
+  reason?: string | null
   open_at?: string | null
   next_probe_at?: string | null
+  next_probe_at_unix_secs?: number | null
+  probe_interval_minutes?: number | null
+  max_probe_interval_minutes?: number | null
+  failure_count?: number | null
+  consecutive_failures?: number | null
+  last_failure_at?: string | null
+  last_probe_failure_at?: string | null
   half_open_until?: string | null
   half_open_successes: number
   half_open_failures: number
+  request_results_window?: Array<{ ts: number; ok: boolean }>
 }
 
 export interface EndpointAPIKeyUpdate {
