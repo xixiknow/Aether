@@ -934,7 +934,11 @@ async fn resolve_openai_chat_to_openai_image_payload_parts(
     let upstream_url = if is_chatgpt_web {
         chatgpt_web_image_internal_url(&transport.endpoint.base_url)
     } else {
-        build_openai_image_upstream_url(transport, parts.uri.query())
+        build_openai_image_upstream_url(
+            transport,
+            Some("/v1/images/generations"),
+            parts.uri.query(),
+        )
     };
     let Some(mut provider_request_headers) =
         build_openai_image_headers(ProviderOpenAiImageHeadersInput {

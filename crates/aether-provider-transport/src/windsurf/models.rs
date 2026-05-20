@@ -315,7 +315,7 @@ mod tests {
         let model = resolve_windsurf_model("gpt-5-5-low").expect("model should resolve");
 
         assert_eq!(model.canonical_name, "gpt-5.5-low");
-        assert_eq!(model.model_uid.as_deref(), Some("gpt-5-5-low"));
+        assert_eq!(model.model_uid, Some("gpt-5-5-low"));
         assert_eq!(model.enum_value, 0);
         assert_eq!(model.credit_multiplier, 1.0);
     }
@@ -325,7 +325,7 @@ mod tests {
         let model = resolve_windsurf_model("claude-opus-4.7").expect("model should resolve");
 
         assert_eq!(model.canonical_name, "claude-opus-4-7-medium");
-        assert_eq!(model.model_uid.as_deref(), Some("claude-opus-4-7-medium"));
+        assert_eq!(model.model_uid, Some("claude-opus-4-7-medium"));
         assert_eq!(model.enum_value, 0);
         assert_eq!(model.credit_multiplier, 8.0);
     }
@@ -335,7 +335,7 @@ mod tests {
         let model = resolve_windsurf_model("gpt-5-5-low-priority").expect("model should resolve");
 
         assert_eq!(model.canonical_name, "gpt-5.5-low-fast");
-        assert_eq!(model.model_uid.as_deref(), Some("gpt-5-5-low-priority"));
+        assert_eq!(model.model_uid, Some("gpt-5-5-low-priority"));
         assert_eq!(model.credit_multiplier, 2.0);
     }
 
@@ -343,21 +343,18 @@ mod tests {
     fn resolves_full_gpt55_effort_ladder_and_priority_aliases() {
         let none = resolve_windsurf_model("gpt-5-5-none").expect("none should resolve");
         assert_eq!(none.canonical_name, "gpt-5.5-none");
-        assert_eq!(none.model_uid.as_deref(), Some("gpt-5-5-none"));
+        assert_eq!(none.model_uid, Some("gpt-5-5-none"));
         assert_eq!(none.credit_multiplier, 1.0);
 
         let high = resolve_windsurf_model("gpt-5.5-high").expect("high should resolve");
         assert_eq!(high.canonical_name, "gpt-5.5-high");
-        assert_eq!(high.model_uid.as_deref(), Some("gpt-5-5-high"));
+        assert_eq!(high.model_uid, Some("gpt-5-5-high"));
         assert_eq!(high.credit_multiplier, 4.0);
 
         let xhigh_fast = resolve_windsurf_model("gpt-5-5-xhigh-priority")
             .expect("xhigh priority should resolve");
         assert_eq!(xhigh_fast.canonical_name, "gpt-5.5-xhigh-fast");
-        assert_eq!(
-            xhigh_fast.model_uid.as_deref(),
-            Some("gpt-5-5-xhigh-priority")
-        );
+        assert_eq!(xhigh_fast.model_uid, Some("gpt-5-5-xhigh-priority"));
         assert_eq!(xhigh_fast.credit_multiplier, 16.0);
     }
 
@@ -365,14 +362,11 @@ mod tests {
     fn resolves_windsurfapi_catalog_aliases_beyond_gpt55() {
         let gpt52_medium = resolve_windsurf_model("gpt-5.2-medium").expect("gpt-5.2 medium alias");
         assert_eq!(gpt52_medium.canonical_name, "gpt-5.2");
-        assert_eq!(
-            gpt52_medium.model_uid.as_deref(),
-            Some("MODEL_GPT_5_2_MEDIUM")
-        );
+        assert_eq!(gpt52_medium.model_uid, Some("MODEL_GPT_5_2_MEDIUM"));
 
         let haiku = resolve_windsurf_model("claude-haiku-4-5-20251001").expect("dated haiku alias");
         assert_eq!(haiku.canonical_name, "claude-4.5-haiku");
-        assert_eq!(haiku.model_uid.as_deref(), Some("MODEL_PRIVATE_11"));
+        assert_eq!(haiku.model_uid, Some("MODEL_PRIVATE_11"));
 
         let uid = resolve_windsurf_model("MODEL_GPT_5_2_LOW").expect("model uid alias");
         assert_eq!(uid.canonical_name, "gpt-5.2-low");

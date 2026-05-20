@@ -1705,6 +1705,7 @@ mod tests {
                     "modelUid": "claude-sonnet-4-6"
                 }
             }),
+            status_code: 200,
         };
         let outcome = fetch_models_from_transports(&runtime, &[sample_windsurf_transport()])
             .await

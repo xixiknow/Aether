@@ -508,9 +508,6 @@ pub(super) async fn handle_admin_provider_oauth_import_refresh_token(
                 "Refresh Token 或 Access Token 不能为空",
             ));
         }
-        let Some(template) = admin_provider_oauth_template(&provider_type) else {
-            return Ok(build_admin_provider_oauth_backend_unavailable_response());
-        };
         match resolve_admin_provider_oauth_single_import_tokens(
             state,
             template,

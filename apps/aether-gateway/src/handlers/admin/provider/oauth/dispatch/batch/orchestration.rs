@@ -8,7 +8,7 @@ use super::parse::{
 };
 use crate::handlers::admin::provider::oauth::errors::build_internal_control_error_response;
 use crate::handlers::admin::provider::oauth::state::{
-    build_admin_provider_oauth_backend_unavailable_response,
+    admin_provider_oauth_template, build_admin_provider_oauth_backend_unavailable_response,
     is_fixed_provider_type_for_provider_oauth,
 };
 use crate::handlers::admin::provider::shared::paths::admin_provider_oauth_batch_import_provider_id;

@@ -1727,7 +1727,7 @@ async fn execute_execution_runtime_sync_impl(
         }
         let (mut result_error_type, mut result_error_message) =
             execution_error_details(result.error.as_ref(), body_json.as_ref());
-        if result.status_code < 400 {
+        if result.status_code < 400 && body_json.is_none() {
             if let Some(error_body_json) =
                 extract_provider_private_stream_error_body(report_context.as_ref(), &body_bytes)
             {

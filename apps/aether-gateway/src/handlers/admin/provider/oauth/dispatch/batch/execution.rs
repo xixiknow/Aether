@@ -25,6 +25,7 @@ use crate::handlers::admin::provider::oauth::runtime::{
 use crate::handlers::admin::provider::oauth::state::{
     admin_provider_oauth_template, exchange_admin_provider_oauth_refresh_token,
 };
+use crate::handlers::admin::provider::shared::support::ADMIN_PROVIDER_OAUTH_DATA_UNAVAILABLE_DETAIL;
 use crate::handlers::admin::request::{AdminAppState, AdminProviderOAuthTemplate};
 use crate::GatewayError;
 use aether_admin::provider::oauth::parse_admin_provider_oauth_kiro_batch_import_entries;
@@ -167,10 +168,6 @@ async fn resolve_admin_provider_oauth_batch_import_tokens(
         });
     }
 
-    let Some(template) = template else {
-        return Err(ADMIN_PROVIDER_OAUTH_DATA_UNAVAILABLE_DETAIL.to_string());
-    };
-
     if let Some(refresh_token) = refresh_token {
         let Some(template) = template else {
             if provider_type_supports_access_token_import(provider_type) {
@@ -301,7 +298,10 @@ pub(super) async fn execute_admin_provider_oauth_batch_import(
     };
 
     let template = admin_provider_oauth_template(provider_type);
-    if template.is_none() && !provider_type.eq_ignore_ascii_case("windsurf") {
+    if template.is_none()
+        && !provider_type.eq_ignore_ascii_case("windsurf")
+        && !provider_type_supports_access_token_import(provider_type)
+    {
         return Ok(AdminProviderOAuthBatchImportOutcome {
             total: entries.len(),
             success: 0,

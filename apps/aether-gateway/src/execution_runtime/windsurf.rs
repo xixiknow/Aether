@@ -345,7 +345,6 @@ async fn prepare_windsurf_cascade(
             native_allowlist: native_bridge
                 .map(|bridge| bridge.native_allowlist.clone())
                 .unwrap_or_default(),
-            ..SendCascadeMessageOptions::default()
         };
         let send_payload = build_send_cascade_message_request_with_options(
             &input.api_key,
@@ -414,7 +413,7 @@ async fn read_windsurf_key_upstream_metadata(
     }
 
     match state
-        .read_provider_catalog_keys_by_ids(&[plan.key_id.clone()])
+        .read_provider_catalog_keys_by_ids(std::slice::from_ref(&plan.key_id))
         .await
     {
         Ok(keys) => keys
@@ -1693,10 +1692,8 @@ fn build_cascade_message_with_options(
         };
         let text = text.trim();
         match role {
-            "system" => {
-                if !text.is_empty() {
-                    system_text.push(text.to_string());
-                }
+            "system" if !text.is_empty() => {
+                system_text.push(text.to_string());
             }
             "assistant" => {
                 let assistant_text = assistant_message_text_for_cascade(message, text, dialect);

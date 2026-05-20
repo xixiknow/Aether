@@ -2880,6 +2880,7 @@ async fn gateway_completes_admin_provider_oauth_key_locally_with_trusted_admin_p
         .expect("account_state_recheck_error should be string when recheck is attempted");
     assert!(
         account_state_recheck_error == "wham/usage API 返回状态码 401"
+            || account_state_recheck_error == "wham/usage API 返回状态码 403"
             || account_state_recheck_error.starts_with("wham/usage 请求执行失败:"),
         "unexpected account_state_recheck_error: {account_state_recheck_error}"
     );
@@ -5351,6 +5352,7 @@ async fn gateway_refreshes_admin_provider_oauth_key_locally_with_trusted_admin_p
             .expect("account_state_recheck_error should be string when attempted");
         assert!(
             account_state_recheck_error == "wham/usage API 返回状态码 401"
+                || account_state_recheck_error == "wham/usage API 返回状态码 403"
                 || account_state_recheck_error.starts_with("wham/usage 请求执行失败:"),
             "unexpected account_state_recheck_error: {account_state_recheck_error}"
         );
@@ -5400,6 +5402,14 @@ async fn gateway_refreshes_admin_provider_oauth_key_locally_with_trusted_admin_p
             stored_key.oauth_invalid_reason.as_deref(),
             Some("[OAUTH_EXPIRED] Codex Token 无效或已过期 (401)")
         );
+    } else if account_state_recheck_attempted
+        && payload["account_state_recheck_error"] == "wham/usage API 返回状态码 403"
+    {
+        assert!(stored_key.oauth_invalid_at_unix_secs.is_some());
+        assert!(stored_key
+            .oauth_invalid_reason
+            .as_deref()
+            .is_some_and(|reason| reason.contains("(403)")));
     } else {
         assert_eq!(stored_key.oauth_invalid_at_unix_secs, None);
         assert_eq!(stored_key.oauth_invalid_reason, None);

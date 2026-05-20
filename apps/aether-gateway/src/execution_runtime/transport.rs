@@ -25,6 +25,7 @@ use serde_json::json;
 use serde_json::Value;
 use thiserror::Error;
 
+use crate::ai_serving::api::extract_provider_private_stream_error_body;
 #[cfg(test)]
 use crate::execution_runtime::remote_compat::execute_sync_plan_via_remote_execution_runtime;
 use crate::execution_runtime::windsurf::maybe_execute_windsurf_sync;
@@ -1466,11 +1467,8 @@ pub(crate) fn build_execution_response_body(
         return Ok(None);
     }
 
-    if let Some(body_json) =
-        aether_ai_formats::api::extract_provider_private_stream_error_body(None, decoded_body_bytes)
-            .or_else(|| {
-                aether_ai_formats::api::extract_provider_private_stream_error_body(None, body_bytes)
-            })
+    if let Some(body_json) = extract_provider_private_stream_error_body(None, decoded_body_bytes)
+        .or_else(|| extract_provider_private_stream_error_body(None, body_bytes))
     {
         return Ok(Some(ResponseBody {
             json_body: Some(body_json),
