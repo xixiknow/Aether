@@ -9,6 +9,7 @@ use axum::{
     response::{IntoResponse, Response},
     Json,
 };
+use base64::{engine::general_purpose::STANDARD as BASE64_STANDARD, Engine as _};
 use serde_json::{json, Value};
 use std::collections::BTreeMap;
 
@@ -548,14 +549,67 @@ fn admin_monitoring_trace_response_data(
         return None;
     }
 
+    let body = admin_monitoring_trace_response_body(headers, body);
     Some(json!({
         "source": source,
         "status_code": status_code,
         "headers": headers.cloned().unwrap_or(Value::Null),
-        "body": body.cloned().unwrap_or(Value::Null),
+        "body": body.unwrap_or(Value::Null),
         "body_ref": body_ref,
         "body_state": body_state.map(|state| state.as_str()),
     }))
+}
+
+fn admin_monitoring_trace_response_body(
+    headers: Option<&Value>,
+    body: Option<&Value>,
+) -> Option<Value> {
+    let body = body?;
+    admin_monitoring_decode_connect_json_error_body(headers, body).or_else(|| Some(body.clone()))
+}
+
+fn admin_monitoring_decode_connect_json_error_body(
+    headers: Option<&Value>,
+    body: &Value,
+) -> Option<Value> {
+    if !admin_monitoring_headers_indicate_connect_json(headers) {
+        return None;
+    }
+
+    let body_base64 = match body {
+        Value::String(value) => Some(value.as_str()),
+        Value::Object(object) => object
+            .get("encoding")
+            .and_then(Value::as_str)
+            .is_some_and(|value| value.eq_ignore_ascii_case("base64"))
+            .then(|| object.get("data").and_then(Value::as_str))
+            .flatten(),
+        _ => None,
+    }?
+    .trim();
+    if body_base64.is_empty() {
+        return None;
+    }
+
+    let body_bytes = BASE64_STANDARD.decode(body_base64).ok()?;
+    aether_ai_formats::api::extract_provider_private_stream_error_body(None, &body_bytes)
+}
+
+fn admin_monitoring_headers_indicate_connect_json(headers: Option<&Value>) -> bool {
+    headers
+        .and_then(Value::as_object)
+        .and_then(|object| {
+            object.iter().find_map(|(key, value)| {
+                key.eq_ignore_ascii_case("content-type")
+                    .then(|| value.as_str())
+                    .flatten()
+            })
+        })
+        .map(str::trim)
+        .is_some_and(|value| {
+            let value = value.to_ascii_lowercase();
+            value.contains("application/connect+json") || value.contains("+connect+json")
+        })
 }
 
 fn merge_admin_monitoring_trace_response(

@@ -127,6 +127,16 @@ describe('providerKeyQuota', () => {
         },
       },
     }, 'windsurf')).toBe('冷却中')
+
+    expect(getQuotaDisplayText({
+      status_snapshot: {
+        quota: {
+          provider_type: 'windsurf',
+          code: 'cooldown',
+          exhausted: false,
+        },
+      },
+    }, 'windsurf')).toBe('冷却中')
   })
 
   it('includes Windsurf quota windows and model availability in display text', () => {
@@ -160,6 +170,44 @@ describe('providerKeyQuota', () => {
         },
       },
     }, 'windsurf')).toBe('日剩余 75.0% | 周剩余 50.0% | Prompt 剩余 12/20 | Flex 剩余 3/5 | 可用模型 7 个')
+
+    expect(getQuotaDisplayText({
+      status_snapshot: {
+        quota: {
+          provider_type: 'windsurf',
+          code: 'cooldown',
+          label: '冷却中',
+          exhausted: false,
+          rate_limit: {
+            limited: true,
+            has_capacity: true,
+            messages_remaining: -1,
+            max_messages: -1,
+          },
+          allowed_models_count: 118,
+          windows: [
+            {
+              code: 'daily',
+              remaining_ratio: 0.99,
+            },
+            {
+              code: 'weekly',
+              remaining_ratio: 1,
+            },
+            {
+              code: 'prompt',
+              remaining_value: 100,
+              limit_value: 100,
+            },
+            {
+              code: 'rate_limit',
+              reset_seconds: null,
+              is_exhausted: false,
+            },
+          ],
+        },
+      },
+    }, 'windsurf')).toBe('日剩余 99.0% | 周剩余 100.0% | Prompt 剩余 100/100 | 可用模型 118 个')
   })
 
   it('uses Windsurf model availability when no quota window is present', () => {

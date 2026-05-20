@@ -211,10 +211,10 @@ pub use crate::provider_compat::kiro_stream::{
     KiroToClaudeCliStreamState, KIRO_MAX_THINKING_BUFFER,
 };
 pub use crate::provider_compat::private_envelope::{
-    maybe_build_provider_private_stream_normalizer, normalize_provider_private_report_context,
-    normalize_provider_private_response_value, provider_private_response_allows_sync_finalize,
-    stream_body_contains_error_event, transform_provider_private_stream_line,
-    ProviderPrivateStreamNormalizer,
+    extract_provider_private_stream_error_body, maybe_build_provider_private_stream_normalizer,
+    normalize_provider_private_report_context, normalize_provider_private_response_value,
+    provider_private_response_allows_sync_finalize, stream_body_contains_error_event,
+    transform_provider_private_stream_line, ProviderPrivateStreamNormalizer,
 };
 pub use crate::provider_compat::surfaces::{
     provider_adaptation_allows_sync_finalize_envelope, provider_adaptation_anchor_api_format,

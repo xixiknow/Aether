@@ -2384,6 +2384,122 @@ async fn gateway_routes_grok_responses_admin_pool_model_test_through_grok_runtim
 }
 
 #[tokio::test]
+async fn gateway_streams_windsurf_connect_upstream_for_admin_model_test() {
+    let execution_runtime = Router::new().route(
+        "/v1/execute/sync",
+        any(move |Json(plan): Json<ExecutionPlan>| async move {
+            assert_eq!(plan.provider_id, "provider-windsurf");
+            assert_eq!(plan.endpoint_id, "endpoint-windsurf-chat");
+            assert_eq!(plan.key_id, "key-windsurf-primary");
+            assert_eq!(plan.provider_api_format, "openai:chat");
+            assert_eq!(plan.content_type.as_deref(), Some("application/connect+json"));
+            assert!(plan.stream, "Windsurf Connect model test must stream upstream");
+            assert_eq!(
+                plan.body
+                    .json_body
+                    .as_ref()
+                    .and_then(|body| body.get("stream")),
+                Some(&json!(true))
+            );
+            let windsurf_payload = serde_json::to_vec(&json!({
+                "chatMessage": {
+                    "text": "ok"
+                }
+            }))
+            .expect("windsurf payload should encode");
+            let mut windsurf_frame = vec![0u8];
+            windsurf_frame.extend_from_slice(&(windsurf_payload.len() as u32).to_be_bytes());
+            windsurf_frame.extend_from_slice(&windsurf_payload);
+            Json(json!({
+                "request_id": plan.request_id,
+                "candidate_id": plan.candidate_id,
+                "status_code": 200,
+                "headers": {
+                    "content-type": "application/connect+json"
+                },
+                "body": {
+                    "body_bytes_b64": base64::engine::general_purpose::STANDARD.encode(windsurf_frame)
+                },
+                "telemetry": {
+                    "elapsed_ms": 24
+                }
+            }))
+        }),
+    );
+
+    let (execution_runtime_url, execution_runtime_handle) = start_server(execution_runtime).await;
+    let mut provider = sample_provider("provider-windsurf", "Windsurf", 10);
+    provider.provider_type = "windsurf".to_string();
+    let mut key = sample_key(
+        "key-windsurf-primary",
+        "provider-windsurf",
+        "openai:chat",
+        "devin-session-token$abc",
+    );
+    key.auth_type = "oauth".to_string();
+    let provider_catalog_repository = Arc::new(InMemoryProviderCatalogReadRepository::seed(
+        vec![provider],
+        vec![sample_endpoint(
+            "endpoint-windsurf-chat",
+            "provider-windsurf",
+            "openai:chat",
+            "https://server.codeium.com",
+        )],
+        vec![key],
+    ));
+
+    let gateway = build_router_with_state(
+        build_state_with_execution_runtime_override(execution_runtime_url)
+            .with_data_state_for_tests(GatewayDataState::with_provider_transport_reader_for_tests(
+                provider_catalog_repository,
+                DEVELOPMENT_ENCRYPTION_KEY.to_string(),
+            )),
+    );
+    let (gateway_url, gateway_handle) = start_server(gateway).await;
+
+    let response = reqwest::Client::new()
+        .post(format!("{gateway_url}/api/admin/provider-query/test-model"))
+        .header(GATEWAY_HEADER, "rust-phase3b")
+        .header(TRUSTED_ADMIN_USER_ID_HEADER, "admin-user-123")
+        .header(TRUSTED_ADMIN_USER_ROLE_HEADER, "admin")
+        .header(TRUSTED_ADMIN_SESSION_ID_HEADER, "session-123")
+        .json(&json!({
+            "provider_id": "provider-windsurf",
+            "model": "claude-opus-4-7-medium",
+            "api_format": "openai:chat",
+            "endpoint_id": "endpoint-windsurf-chat",
+            "request_body": {
+                "model": "claude-opus-4-7-medium",
+                "messages": [{
+                    "role": "user",
+                    "content": "Hello! This is a test message."
+                }],
+                "max_tokens": 30,
+                "temperature": 0.7,
+                "stream": true
+            }
+        }))
+        .send()
+        .await
+        .expect("request should succeed");
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let payload: serde_json::Value = response.json().await.expect("json body should parse");
+    assert_eq!(payload["success"], json!(true));
+    assert_eq!(
+        payload["attempts"][0]["request_body"]["stream"],
+        json!(true)
+    );
+    assert_eq!(
+        payload["attempts"][0]["response_body"]["choices"][0]["message"]["content"],
+        json!("ok")
+    );
+
+    gateway_handle.abort();
+    execution_runtime_handle.abort();
+}
+
+#[tokio::test]
 async fn gateway_uses_pool_scheduler_order_for_admin_pool_model_test() {
     let execution_runtime = Router::new().route(
         "/v1/execute/sync",

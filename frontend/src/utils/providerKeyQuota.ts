@@ -76,6 +76,24 @@ function getQuotaWindow(
   return getQuotaWindows(quota).find(window => normalizeText(window.code)?.toLowerCase() === normalizedCode) ?? null
 }
 
+function positiveNumber(value: unknown): number | null {
+  return typeof value === 'number' && Number.isFinite(value) && value > 0 ? value : null
+}
+
+function windsurfCooldownHasPositiveReset(quota: QuotaStatusSnapshot): boolean {
+  const rateLimit = quota.rate_limit
+  if (rateLimit && typeof rateLimit === 'object') {
+    const retryAfterMs = positiveNumber(rateLimit.retry_after_ms) ?? positiveNumber(rateLimit.retryAfterMs)
+    if (retryAfterMs != null) return true
+  }
+
+  const rateLimitWindow = getQuotaWindow(quota, 'rate_limit')
+  return (
+    positiveNumber(rateLimitWindow?.reset_seconds) != null
+    || positiveNumber(rateLimitWindow?.reset_at) != null
+  )
+}
+
 function getQuotaWindowsByScope(
   quota: QuotaStatusSnapshot | null | undefined,
   scope: string,
@@ -219,7 +237,10 @@ function getWindsurfQuotaText(quota: QuotaStatusSnapshot): string | null {
   if (code === 'banned' || code === 'forbidden' || code === 'quarantined') {
     return normalizeText(quota.label) || '账号不可用'
   }
-  if (code === 'rate_limited' || code === 'rate_limit' || code === 'cooldown') {
+  if (code === 'cooldown' && windsurfCooldownHasPositiveReset(quota)) {
+    return normalizeText(quota.label) || '冷却中'
+  }
+  if (code === 'rate_limited' || code === 'rate_limit') {
     return normalizeText(quota.label) || '速率受限'
   }
   if (code === 'exhausted') {
@@ -257,6 +278,10 @@ function getWindsurfQuotaText(quota: QuotaStatusSnapshot): string | null {
   }
 
   if (parts.length > 0) return parts.join(' | ')
+
+  if (code === 'cooldown') {
+    return normalizeText(quota.label) || '冷却中'
+  }
 
   return normalizeText(quota.label)
 }

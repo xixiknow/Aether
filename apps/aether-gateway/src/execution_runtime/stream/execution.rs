@@ -44,13 +44,14 @@ use super::error::{
 #[path = "execution_failures.rs"]
 mod execution_failures;
 use self::execution_failures::{
-    build_stream_failure_from_execution_error, build_stream_failure_report,
+    build_stream_failure_from_execution_error, build_stream_failure_from_provider_error_body,
+    build_stream_failure_report, handle_prefetch_provider_private_stream_error,
     handle_prefetch_stream_failure, submit_midstream_stream_failure, StreamFailureReport,
 };
 use crate::ai_serving::api::{
-    maybe_bridge_standard_sync_json_to_stream, maybe_build_provider_private_stream_normalizer,
-    maybe_build_stream_response_rewriter, normalize_provider_private_report_context,
-    StreamingStandardTerminalObserver,
+    extract_provider_private_stream_error_body, maybe_bridge_standard_sync_json_to_stream,
+    maybe_build_provider_private_stream_normalizer, maybe_build_stream_response_rewriter,
+    normalize_provider_private_report_context, StreamingStandardTerminalObserver,
 };
 use crate::api::response::{
     attach_control_metadata_headers, build_client_response, build_client_response_from_parts,
@@ -73,14 +74,15 @@ use crate::execution_runtime::oauth_retry::refresh_oauth_plan_auth_for_retry;
 #[cfg(test)]
 use crate::execution_runtime::remote_compat::post_stream_plan_to_remote_execution_runtime;
 use crate::execution_runtime::submission::{
-    resolve_core_error_background_report_kind, strip_utf8_bom_and_ws,
-    submit_local_core_error_or_sync_finalize,
+    resolve_core_error_background_report_kind, resolve_local_sync_error_status_code,
+    strip_utf8_bom_and_ws, submit_local_core_error_or_sync_finalize,
 };
 use crate::execution_runtime::transport::{
     execute_stream_plan_via_local_tunnel, record_manual_proxy_request_failure,
     record_manual_proxy_request_success, record_manual_proxy_stream_error,
     DirectSyncExecutionRuntime, DirectUpstreamStreamExecution, ExecutionRuntimeTransportError,
 };
+use crate::execution_runtime::windsurf::maybe_execute_windsurf_stream;
 use crate::execution_runtime::{
     apply_endpoint_response_header_rules, attach_provider_response_headers_to_report_context,
     local_failover_response_text, resolve_core_stream_direct_finalize_report_kind,
@@ -849,6 +851,58 @@ pub(crate) async fn execute_execution_runtime_stream(
             return Ok(None);
         }
     }
+    match maybe_execute_windsurf_stream(state, &plan, report_context.as_ref()).await {
+        Ok(Some(windsurf_stream)) => {
+            return execute_stream_from_frame_stream(
+                state,
+                plan,
+                trace_id,
+                decision,
+                plan_kind,
+                report_kind,
+                windsurf_stream.report_context.or(report_context),
+                candidate_started_unix_secs,
+                stream_started_at,
+                windsurf_stream.frame_stream,
+                provider_pool_in_flight_guard.take(),
+            )
+            .await;
+        }
+        Ok(None) => {}
+        Err(err) => {
+            info!(
+                event_name = "windsurf_native_execution_unavailable",
+                log_type = "ops",
+                trace_id = %trace_id,
+                request_id = %plan_request_id_for_log,
+                candidate_id = ?plan.candidate_id,
+                provider_name = provider_name.as_str(),
+                endpoint_id = %endpoint_id,
+                key_id = %key_id,
+                model_name = model_name.as_str(),
+                candidate_index = candidate_index.as_str(),
+                error = %err,
+                "gateway native Windsurf stream execution unavailable"
+            );
+            let terminal_unix_secs = current_request_candidate_unix_ms();
+            record_local_request_candidate_status(
+                state,
+                &plan,
+                report_context.as_ref(),
+                SchedulerRequestCandidateStatusUpdate {
+                    status: RequestCandidateStatus::Failed,
+                    status_code: None,
+                    error_type: Some("windsurf_native_execution_unavailable".to_string()),
+                    error_message: Some(err.to_string()),
+                    latency_ms: None,
+                    started_at_unix_ms: Some(candidate_started_unix_secs),
+                    finished_at_unix_ms: Some(terminal_unix_secs),
+                },
+            )
+            .await;
+            return Ok(None);
+        }
+    }
     match maybe_execute_kiro_web_search_stream(state, &plan, report_context.as_ref()).await {
         Ok(Some(kiro_web_search)) => {
             return execute_stream_from_frame_stream(
@@ -1197,13 +1251,13 @@ fn encode_terminal_sse_error_event(failure: &StreamFailureReport) -> Result<Byte
     let payload = failure
         .to_json_string()
         .map_err(|err| IoError::other(err.to_string()))?;
-    let mut event = String::from("event: aether.error\n");
+    let mut event = String::new();
     for line in payload.lines() {
         event.push_str("data: ");
         event.push_str(line);
         event.push('\n');
     }
-    event.push('\n');
+    event.push_str("\ndata: [DONE]\n\n");
     Ok(Bytes::from(event))
 }
 
@@ -1693,24 +1747,46 @@ async fn execute_stream_from_frame_stream(
 
     if !(200..300).contains(&status_code) {
         let provider_error_body = collect_error_body(&mut lines).await?;
-        let synthetic_body_json =
-            should_synthesize_non_success_stream_error_body(status_code, &provider_error_body)
-                .then(|| build_synthetic_non_success_stream_error_body(status_code, &headers));
-        let (provider_body_json, provider_body_base64) =
-            decode_stream_error_body(&headers, &provider_error_body);
-        let client_status_code = stream_client_error_status_code_for_upstream_status(status_code);
-        let wrapped_binary_body_json = wrap_non_json_binary_stream_error_for_client(
-            plan_kind,
-            &headers,
+        let private_error_body_json = extract_provider_private_stream_error_body(
+            report_context.as_ref(),
             &provider_error_body,
-        )?;
-        let (client_body_json, client_error_body) =
+        );
+        let provider_private_error_decoded = private_error_body_json.is_some();
+        let synthetic_body_json = (!provider_private_error_decoded
+            && should_synthesize_non_success_stream_error_body(status_code, &provider_error_body))
+        .then(|| build_synthetic_non_success_stream_error_body(status_code, &headers));
+        let (provider_body_json, provider_body_base64) =
+            if let Some(error_body_json) = private_error_body_json {
+                (Some(error_body_json), None)
+            } else {
+                decode_stream_error_body(&headers, &provider_error_body)
+            };
+        let client_status_code = stream_client_error_status_code_for_upstream_status(status_code);
+        let wrapped_binary_body_json = if provider_private_error_decoded {
+            None
+        } else {
+            wrap_non_json_binary_stream_error_for_client(plan_kind, &headers, &provider_error_body)?
+        };
+        let (client_body_json, client_error_body, payload_client_body_json) =
             if let Some(body_json) = synthetic_body_json.or(wrapped_binary_body_json) {
                 let body_bytes = serde_json::to_vec(&body_json)
                     .map_err(|err| GatewayError::Internal(err.to_string()))?;
-                (Some(body_json), body_bytes)
+                (Some(body_json.clone()), body_bytes, Some(body_json))
+            } else if provider_private_error_decoded {
+                let body_json = provider_body_json.clone().ok_or_else(|| {
+                    GatewayError::Internal(
+                        "decoded provider private stream error body is missing".to_string(),
+                    )
+                })?;
+                let body_bytes = serde_json::to_vec(&body_json)
+                    .map_err(|err| GatewayError::Internal(err.to_string()))?;
+                (Some(body_json), body_bytes, None)
             } else {
-                (provider_body_json.clone(), provider_error_body.clone())
+                (
+                    provider_body_json.clone(),
+                    provider_error_body.clone(),
+                    provider_body_json.clone(),
+                )
             };
         let error_response_text =
             local_failover_response_text(client_body_json.as_ref(), &client_error_body, None);
@@ -1897,6 +1973,11 @@ async fn execute_stream_from_frame_stream(
         } else {
             headers.clone()
         };
+        if provider_private_error_decoded {
+            client_headers.remove("content-encoding");
+            client_headers.remove("content-length");
+            client_headers.insert("content-type".to_string(), "application/json".to_string());
+        }
         apply_endpoint_response_header_rules(
             state,
             &plan,
@@ -1928,7 +2009,7 @@ async fn execute_stream_from_frame_stream(
             provider_body_json,
             provider_body_base64,
             client_headers,
-            client_body_json,
+            payload_client_body_json,
             None,
         );
         record_sync_terminal_usage(state, &plan, payload.report_context.as_ref(), &payload);
@@ -2126,6 +2207,30 @@ async fn execute_stream_from_frame_stream(
 
                     provider_prefetched_body.extend_from_slice(&chunk);
                     prefetched_inspection_body.extend_from_slice(&chunk);
+
+                    if let Some(error_body_json) = extract_provider_private_stream_error_body(
+                        report_context.as_ref(),
+                        &prefetched_inspection_body,
+                    ) {
+                        let error_status_code =
+                            resolve_local_sync_error_status_code(status_code, &error_body_json);
+                        return handle_prefetch_provider_private_stream_error(
+                            state,
+                            trace_id,
+                            decision,
+                            &plan,
+                            report_context,
+                            request_id,
+                            candidate_id,
+                            report_kind,
+                            headers,
+                            prefetched_telemetry,
+                            &provider_prefetched_body,
+                            error_status_code,
+                            error_body_json,
+                        )
+                        .await;
+                    }
 
                     let inspection = inspect_prefetched_stream_body(
                         &upstream_headers,
@@ -2835,6 +2940,11 @@ async fn execute_stream_from_frame_stream(
                         } else {
                             chunk
                         };
+                        let provider_private_error_body_json =
+                            extract_provider_private_stream_error_body(
+                                stream_usage_report_context.as_ref(),
+                                &normalized_chunk,
+                            );
                         if let (Some(observer), Some(report_context)) = (
                             stream_usage_observer.as_mut(),
                             stream_usage_report_context.as_ref(),
@@ -2873,6 +2983,18 @@ async fn execute_stream_from_frame_stream(
                         };
 
                         if rewritten_chunk.is_empty() {
+                            if let Some(error_body_json) = provider_private_error_body_json {
+                                let error_status_code = resolve_local_sync_error_status_code(
+                                    status_code,
+                                    &error_body_json,
+                                );
+                                terminal_failure =
+                                    Some(build_stream_failure_from_provider_error_body(
+                                        error_status_code,
+                                        &error_body_json,
+                                    ));
+                                break;
+                            }
                             continue;
                         }
 
@@ -2935,6 +3057,15 @@ async fn execute_stream_from_frame_stream(
                                 Ordering::Relaxed,
                             );
                         }
+                        if let Some(error_body_json) = provider_private_error_body_json {
+                            let error_status_code =
+                                resolve_local_sync_error_status_code(status_code, &error_body_json);
+                            terminal_failure = Some(build_stream_failure_from_provider_error_body(
+                                error_status_code,
+                                &error_body_json,
+                            ));
+                            break;
+                        }
                     }
                     StreamFramePayload::Telemetry {
                         telemetry: frame_telemetry,
@@ -2992,6 +3123,11 @@ async fn execute_stream_from_frame_stream(
             if let Some(normalizer) = private_stream_normalizer.as_mut() {
                 match normalizer.finish() {
                     Ok(normalized_chunk) if !normalized_chunk.is_empty() => {
+                        let provider_private_error_body_json =
+                            extract_provider_private_stream_error_body(
+                                stream_usage_report_context.as_ref(),
+                                &normalized_chunk,
+                            );
                         if let (Some(observer), Some(report_context)) = (
                             stream_usage_observer.as_mut(),
                             stream_usage_report_context.as_ref(),
@@ -3064,6 +3200,16 @@ async fn execute_stream_from_frame_stream(
                                     Ordering::Relaxed,
                                 );
                             }
+                        }
+                        if let Some(error_body_json) = provider_private_error_body_json {
+                            let error_status_code =
+                                resolve_local_sync_error_status_code(status_code, &error_body_json);
+                            terminal_failure.get_or_insert_with(|| {
+                                build_stream_failure_from_provider_error_body(
+                                    error_status_code,
+                                    &error_body_json,
+                                )
+                            });
                         }
                     }
                     Ok(_) => {}
@@ -3478,6 +3624,7 @@ mod tests {
     use axum::extract::Request;
     use axum::routing::any;
     use axum::{http::header, http::HeaderValue, Router};
+    use base64::Engine as _;
     use futures_util::StreamExt as _;
     use serde_json::{json, Value};
     use tokio::sync::{mpsc, watch, Notify};
@@ -3526,6 +3673,14 @@ mod tests {
             url: None,
             extra: Some(json!({"tunnel_base_url": base_url})),
         }
+    }
+
+    fn connect_json_frame(flags: u8, payload: &[u8]) -> Vec<u8> {
+        let mut out = Vec::with_capacity(5 + payload.len());
+        out.push(flags);
+        out.extend_from_slice(&(payload.len() as u32).to_be_bytes());
+        out.extend_from_slice(payload);
+        out
     }
 
     #[test]
@@ -4410,6 +4565,268 @@ mod tests {
         assert!(text.contains(": aether-keepalive\n\n"));
         assert!(text.contains("event: image_generation.failed"));
         assert!(text.contains("\"type\":\"image_stream_total_timeout\""));
+    }
+
+    #[tokio::test]
+    async fn execute_stream_from_frame_stream_treats_windsurf_connect_trailer_error_as_failure() {
+        let usage_repository = Arc::new(InMemoryUsageReadRepository::default());
+        let request_candidate_repository = Arc::new(InMemoryRequestCandidateRepository::default());
+        let state = AppState::new()
+            .expect("app state should build")
+            .with_data_state_for_tests(
+                crate::data::GatewayDataState::with_request_candidate_and_usage_repository_for_tests(
+                    Arc::clone(&request_candidate_repository),
+                    Arc::clone(&usage_repository),
+                ),
+            )
+            .with_usage_runtime_for_tests(UsageRuntimeConfig {
+                enabled: true,
+                ..UsageRuntimeConfig::default()
+            });
+        let plan = ExecutionPlan {
+            request_id: "req-windsurf-connect-error".into(),
+            candidate_id: Some("cand-windsurf-connect-error".into()),
+            provider_name: Some("windsurf".into()),
+            provider_id: "provider-windsurf".into(),
+            endpoint_id: "endpoint-windsurf-chat".into(),
+            key_id: "key-windsurf".into(),
+            method: "POST".into(),
+            url: "https://server.codeium.com/exa.api_server_pb.ApiServerService/GetChatMessage?beta=true".into(),
+            headers: BTreeMap::from([
+                ("content-type".into(), "application/connect+json".into()),
+                ("accept".into(), "application/connect+json".into()),
+            ]),
+            content_type: Some("application/connect+json".into()),
+            content_encoding: None,
+            body: RequestBody::from_json(json!({
+                "model": "claude-sonnet-4",
+                "messages": [],
+                "stream": true
+            })),
+            stream: true,
+            client_api_format: "claude:messages".into(),
+            provider_api_format: "openai:chat".into(),
+            model_name: Some("claude-sonnet-4".into()),
+            proxy: None,
+            transport_profile: None,
+            timeouts: None,
+        };
+        let trailer_error = connect_json_frame(
+            2,
+            br#"{"error":{"code":"resource_exhausted","message":"an internal error occurred"}}"#,
+        );
+        let trailer_error_b64 = base64::engine::general_purpose::STANDARD.encode(trailer_error);
+        let frame = format!(
+            "{{\"type\":\"data\",\"payload\":{{\"kind\":\"data\",\"chunk_b64\":\"{trailer_error_b64}\"}}}}\n"
+        );
+        let frame_stream = stream! {
+            yield Ok::<Bytes, std::io::Error>(Bytes::from_static(
+                b"{\"type\":\"headers\",\"payload\":{\"kind\":\"headers\",\"status_code\":200,\"headers\":{\"content-type\":\"application/connect+json\"}}}\n",
+            ));
+            yield Ok::<Bytes, std::io::Error>(Bytes::from(frame));
+            yield Ok::<Bytes, std::io::Error>(Bytes::from_static(
+                b"{\"type\":\"eof\",\"payload\":{\"kind\":\"eof\"}}\n",
+            ));
+        }
+        .boxed();
+
+        let response = execute_stream_from_frame_stream(
+            &state,
+            plan,
+            "trace-windsurf-connect-error",
+            &test_decision(),
+            "claude_chat_stream",
+            Some("claude_chat_stream_success".to_string()),
+            Some(json!({
+                "request_id": "req-windsurf-connect-error",
+                "candidate_id": "cand-windsurf-connect-error",
+                "candidate_index": 0,
+                "retry_index": 0,
+                "provider_api_format": "openai:chat",
+                "client_api_format": "claude:messages",
+                "needs_conversion": true,
+                "has_envelope": true,
+                "envelope_name": "windsurf:GetChatMessage",
+                "local_failover_policy": {
+                    "stop_status_codes": [429]
+                }
+            })),
+            crate::clock::current_unix_ms(),
+            Instant::now(),
+            frame_stream,
+            None,
+        )
+        .await
+        .expect("execution should succeed")
+        .expect("execution should return a client response");
+
+        let status = response.status();
+        let body = to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("response body should read");
+        let body_json: Value =
+            serde_json::from_slice(&body).expect("response body should decode as json");
+        assert_eq!(status.as_u16(), 429);
+        assert_eq!(body_json["type"], json!("error"));
+        assert_eq!(body_json["error"]["type"], json!("rate_limit_error"));
+        assert_eq!(body_json["error"]["code"], json!("resource_exhausted"));
+        assert_eq!(
+            body_json["error"]["message"],
+            json!("an internal error occurred")
+        );
+
+        let candidates = tokio::time::timeout(Duration::from_secs(1), async {
+            loop {
+                let candidates = request_candidate_repository
+                    .list_by_request_id("req-windsurf-connect-error")
+                    .await
+                    .expect("request candidates should read");
+                if candidates
+                    .first()
+                    .is_some_and(|candidate| candidate.status == RequestCandidateStatus::Failed)
+                {
+                    break candidates;
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("candidate should be marked failed");
+        assert_eq!(candidates[0].status_code, Some(429));
+        assert_eq!(
+            candidates[0].error_type.as_deref(),
+            Some("resource_exhausted")
+        );
+    }
+
+    #[tokio::test]
+    async fn execute_stream_from_frame_stream_decodes_non_success_windsurf_connect_error_body() {
+        let usage_repository = Arc::new(InMemoryUsageReadRepository::default());
+        let request_candidate_repository = Arc::new(InMemoryRequestCandidateRepository::default());
+        let state = AppState::new()
+            .expect("app state should build")
+            .with_data_state_for_tests(
+                crate::data::GatewayDataState::with_request_candidate_and_usage_repository_for_tests(
+                    Arc::clone(&request_candidate_repository),
+                    Arc::clone(&usage_repository),
+                ),
+            )
+            .with_usage_runtime_for_tests(UsageRuntimeConfig {
+                enabled: true,
+                ..UsageRuntimeConfig::default()
+            });
+        let plan = ExecutionPlan {
+            request_id: "req-windsurf-connect-429".into(),
+            candidate_id: Some("cand-windsurf-connect-429".into()),
+            provider_name: Some("windsurf".into()),
+            provider_id: "provider-windsurf".into(),
+            endpoint_id: "endpoint-windsurf-chat".into(),
+            key_id: "key-windsurf".into(),
+            method: "POST".into(),
+            url: "https://server.codeium.com/exa.api_server_pb.ApiServerService/GetChatMessage?beta=true".into(),
+            headers: BTreeMap::from([
+                ("content-type".into(), "application/connect+json".into()),
+                ("accept".into(), "application/connect+json".into()),
+            ]),
+            content_type: Some("application/connect+json".into()),
+            content_encoding: None,
+            body: RequestBody::from_json(json!({
+                "model": "claude-sonnet-4",
+                "messages": [],
+                "stream": true
+            })),
+            stream: true,
+            client_api_format: "claude:messages".into(),
+            provider_api_format: "openai:chat".into(),
+            model_name: Some("claude-sonnet-4".into()),
+            proxy: None,
+            transport_profile: None,
+            timeouts: None,
+        };
+        let connect_error = connect_json_frame(
+            2,
+            br#"{"error":{"code":"resource_exhausted","message":"quota exhausted"}}"#,
+        );
+        let connect_error_b64 = base64::engine::general_purpose::STANDARD.encode(connect_error);
+        let frame_stream = stream! {
+            yield Ok::<Bytes, std::io::Error>(Bytes::from_static(
+                b"{\"type\":\"headers\",\"payload\":{\"kind\":\"headers\",\"status_code\":429,\"headers\":{\"content-type\":\"application/connect+json\"}}}\n",
+            ));
+            yield Ok::<Bytes, std::io::Error>(Bytes::from(format!(
+                "{{\"type\":\"data\",\"payload\":{{\"kind\":\"data\",\"chunk_b64\":\"{connect_error_b64}\"}}}}\n"
+            )));
+            yield Ok::<Bytes, std::io::Error>(Bytes::from_static(
+                b"{\"type\":\"eof\",\"payload\":{\"kind\":\"eof\"}}\n",
+            ));
+        }
+        .boxed();
+
+        let response = execute_stream_from_frame_stream(
+            &state,
+            plan,
+            "trace-windsurf-connect-429",
+            &test_decision(),
+            "claude_chat_stream",
+            Some("claude_chat_stream_success".to_string()),
+            Some(json!({
+                "request_id": "req-windsurf-connect-429",
+                "candidate_id": "cand-windsurf-connect-429",
+                "candidate_index": 0,
+                "retry_index": 0,
+                "provider_api_format": "openai:chat",
+                "client_api_format": "claude:messages",
+                "needs_conversion": true,
+                "has_envelope": true,
+                "envelope_name": "windsurf:GetChatMessage",
+                "local_failover_policy": {
+                    "stop_status_codes": [429]
+                }
+            })),
+            crate::clock::current_unix_ms(),
+            Instant::now(),
+            frame_stream,
+            None,
+        )
+        .await
+        .expect("execution should succeed")
+        .expect("execution should return a client response");
+
+        assert_eq!(response.status().as_u16(), 429);
+        let body = to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("response body should read");
+        let body_json: Value =
+            serde_json::from_slice(&body).expect("response body should decode as json");
+        assert_eq!(body_json["type"], json!("error"));
+        assert_eq!(body_json["error"]["type"], json!("rate_limit_error"));
+        assert_eq!(body_json["error"]["code"], json!("resource_exhausted"));
+        assert_eq!(body_json["error"]["message"], json!("quota exhausted"));
+
+        let record = tokio::time::timeout(Duration::from_secs(2), async {
+            loop {
+                if let Some(usage) = usage_repository
+                    .find_by_request_id("req-windsurf-connect-429")
+                    .await
+                    .expect("usage should read")
+                    .filter(|usage| usage.status == "failed")
+                {
+                    break usage;
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("usage should be written");
+        assert_eq!(record.status_code, Some(429));
+        assert_eq!(
+            record
+                .response_body
+                .as_ref()
+                .and_then(|body| body.get("error"))
+                .and_then(|error| error.get("code")),
+            Some(&json!("resource_exhausted"))
+        );
+        assert!(record.response_body_ref.is_none());
     }
 
     #[tokio::test]
@@ -5560,8 +5977,9 @@ mod tests {
 
         let body = body_task.await.expect("body task should complete");
         assert!(body.contains("data: hello\n\n"));
-        assert!(body.contains("event: aether.error\n"));
+        assert!(body.contains("data: {\"error\":"));
         assert!(body.contains(original_error));
+        assert!(body.contains("data: [DONE]\n\n"));
         assert!(
             !body.contains("unexpected EOF during chunk size line"),
             "same-format SSE path should surface the original terminal error event"

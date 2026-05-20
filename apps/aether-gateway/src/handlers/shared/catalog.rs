@@ -1268,17 +1268,11 @@ fn build_windsurf_quota_status_snapshot(
             let retry_after_ms = rate_limit_object
                 .get("retry_after_ms")
                 .or_else(|| rate_limit_object.get("retryAfterMs"))
-                .and_then(admin_provider_quota_pure::coerce_json_u64);
-            let limited = rate_limit_object
-                .get("limited")
-                .or_else(|| rate_limit_object.get("is_limited"))
-                .or_else(|| rate_limit_object.get("isLimited"))
-                .and_then(admin_provider_quota_pure::coerce_json_bool)
-                == Some(true);
-            if limited || retry_after_ms.is_some() {
+                .and_then(admin_provider_quota_pure::coerce_json_u64)
+                .filter(|value| *value > 0);
+            if let Some(retry_after_ms) = retry_after_ms {
                 rate_limit_cooling = true;
-                rate_limit_reset_seconds =
-                    retry_after_ms.map(|value| value.saturating_add(999) / 1000);
+                rate_limit_reset_seconds = Some(retry_after_ms.saturating_add(999) / 1000);
                 rate_limit_reason = rate_limit_object
                     .get("message")
                     .and_then(Value::as_str)
@@ -1674,6 +1668,12 @@ fn quota_snapshot_has_materialized_data(
         return false;
     }
 
+    if normalized_provider_type == "windsurf"
+        && windsurf_quota_snapshot_has_stale_cooldown(quota_snapshot)
+    {
+        return false;
+    }
+
     if quota_snapshot
         .get("windows")
         .and_then(Value::as_array)
@@ -1697,6 +1697,61 @@ fn quota_snapshot_has_materialized_data(
                 && !code.eq_ignore_ascii_case("unknown")
                 && !code.eq_ignore_ascii_case("ok")
         })
+}
+
+fn windsurf_quota_snapshot_has_stale_cooldown(quota_snapshot: &Map<String, Value>) -> bool {
+    let code = quota_snapshot
+        .get("code")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .unwrap_or_default();
+    if !code.eq_ignore_ascii_case("cooldown") {
+        return false;
+    }
+
+    let rate_limit = quota_snapshot.get("rate_limit").and_then(Value::as_object);
+    let retry_after_ms = rate_limit
+        .and_then(|rate_limit| {
+            rate_limit
+                .get("retry_after_ms")
+                .or_else(|| rate_limit.get("retryAfterMs"))
+                .and_then(admin_provider_quota_pure::coerce_json_u64)
+        })
+        .unwrap_or(0);
+    if retry_after_ms > 0 {
+        return false;
+    }
+
+    let has_positive_rate_limit_reset = quota_snapshot
+        .get("windows")
+        .and_then(Value::as_array)
+        .is_some_and(|windows| {
+            windows.iter().filter_map(Value::as_object).any(|window| {
+                window
+                    .get("code")
+                    .and_then(Value::as_str)
+                    .is_some_and(|code| code.eq_ignore_ascii_case("rate_limit"))
+                    && window
+                        .get("reset_seconds")
+                        .or_else(|| window.get("reset_at"))
+                        .and_then(admin_provider_quota_pure::coerce_json_u64)
+                        .is_some_and(|value| value > 0)
+            })
+        });
+    if has_positive_rate_limit_reset {
+        return false;
+    }
+
+    let exhausted = quota_snapshot
+        .get("exhausted")
+        .and_then(admin_provider_quota_pure::coerce_json_bool)
+        .unwrap_or(false);
+    let has_capacity = rate_limit
+        .and_then(|rate_limit| rate_limit.get("has_capacity"))
+        .and_then(admin_provider_quota_pure::coerce_json_bool)
+        .unwrap_or(false);
+
+    has_capacity || !exhausted
 }
 
 pub(crate) fn provider_key_status_snapshot_payload(
@@ -2669,6 +2724,123 @@ mod tests {
         assert_eq!(quota.get("reset_seconds"), Some(&json!(61u64)));
         assert_eq!(rate_window.get("is_exhausted"), Some(&json!(false)));
         assert_eq!(rate_window.get("reset_seconds"), Some(&json!(61u64)));
+    }
+
+    #[test]
+    fn provider_key_status_snapshot_payload_keeps_windsurf_capacity_probe_without_retry_after_ok() {
+        let mut key = sample_catalog_key();
+        key.upstream_metadata = Some(json!({
+            "windsurf": {
+                "updated_at": 1_778_067_246u64,
+                "daily_remaining_percent": 100.0,
+                "weekly_remaining_percent": 100.0,
+                "rate_limit": {
+                    "limited": true,
+                    "has_capacity": false,
+                    "messages_remaining": 0.0,
+                    "max_messages": 100.0
+                }
+            }
+        }));
+
+        let payload = provider_key_status_snapshot_payload(&key, "windsurf");
+        let quota = payload
+            .get("quota")
+            .and_then(Value::as_object)
+            .expect("quota snapshot should be object");
+        let has_rate_limit_window =
+            quota
+                .get("windows")
+                .and_then(Value::as_array)
+                .is_some_and(|windows| {
+                    windows
+                        .iter()
+                        .filter_map(Value::as_object)
+                        .any(|window| window.get("code") == Some(&json!("rate_limit")))
+                });
+
+        assert_eq!(quota.get("code"), Some(&json!("ok")));
+        assert_eq!(quota.get("label"), Some(&Value::Null));
+        assert_eq!(quota.get("exhausted"), Some(&json!(false)));
+        assert_eq!(
+            payload.pointer("/quota/rate_limit/limited"),
+            Some(&json!(true))
+        );
+        assert!(!has_rate_limit_window);
+    }
+
+    #[test]
+    fn provider_key_status_snapshot_payload_refreshes_stale_windsurf_cooldown_when_probe_has_capacity(
+    ) {
+        let mut key = sample_catalog_key();
+        key.status_snapshot = Some(json!({
+            "quota": {
+                "version": 2,
+                "provider_type": "windsurf",
+                "code": "cooldown",
+                "label": "冷却中",
+                "exhausted": false,
+                "windows": [
+                    {
+                        "code": "daily",
+                        "unit": "percent",
+                        "label": "日",
+                        "scope": "account",
+                        "remaining_ratio": 0.99,
+                        "is_exhausted": false
+                    },
+                    {
+                        "code": "rate_limit",
+                        "unit": "count",
+                        "label": "速率",
+                        "scope": "account",
+                        "is_exhausted": false,
+                        "reset_seconds": null
+                    }
+                ],
+                "rate_limit": {
+                    "limited": true,
+                    "has_capacity": true,
+                    "messages_remaining": -1,
+                    "max_messages": -1
+                }
+            }
+        }));
+        key.upstream_metadata = Some(json!({
+            "windsurf": {
+                "updated_at": 1_778_067_246u64,
+                "daily_remaining_percent": 99.0,
+                "weekly_remaining_percent": 100.0,
+                "allowed_models_count": 118,
+                "rate_limit": {
+                    "limited": true,
+                    "has_capacity": true,
+                    "messages_remaining": -1,
+                    "max_messages": -1
+                }
+            }
+        }));
+
+        let payload = provider_key_status_snapshot_payload(&key, "windsurf");
+        let quota = payload
+            .get("quota")
+            .and_then(Value::as_object)
+            .expect("quota snapshot should be object");
+        let has_rate_limit_window =
+            quota
+                .get("windows")
+                .and_then(Value::as_array)
+                .is_some_and(|windows| {
+                    windows
+                        .iter()
+                        .filter_map(Value::as_object)
+                        .any(|window| window.get("code") == Some(&json!("rate_limit")))
+                });
+
+        assert_eq!(quota.get("code"), Some(&json!("ok")));
+        assert_eq!(quota.get("label"), Some(&Value::Null));
+        assert_eq!(quota.get("allowed_models_count"), Some(&json!(118u64)));
+        assert!(!has_rate_limit_window);
     }
 
     #[test]

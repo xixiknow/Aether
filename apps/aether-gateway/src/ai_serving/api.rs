@@ -44,6 +44,7 @@ pub(crate) use aether_ai_formats::api::{
     build_core_error_body_for_client_format, convert_standard_chat_response,
     core_error_background_report_kind, core_error_default_client_api_format,
     core_success_background_report_kind, encode_kiro_sse_events,
+    extract_provider_private_stream_error_body,
     implicit_sync_finalize_report_kind, is_core_error_finalize_kind,
     normalize_provider_private_report_context, normalize_provider_private_response_value,
     provider_private_response_allows_sync_finalize, resolve_claude_stream_spec,

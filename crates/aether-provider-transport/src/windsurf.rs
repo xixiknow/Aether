@@ -15,6 +15,10 @@ use crate::{
     transport_proxy_is_locally_supported,
 };
 
+pub mod cascade;
+pub mod models;
+pub mod proto;
+
 pub const PROVIDER_TYPE: &str = "windsurf";
 pub const WINDSURF_ENVELOPE_NAME: &str = "windsurf:GetChatMessage";
 pub const GET_CHAT_MESSAGE_PATH: &str = "/exa.api_server_pb.ApiServerService/GetChatMessage";
@@ -122,7 +126,8 @@ pub fn build_windsurf_cascade_request_body(
     }
     let conversation_id =
         extract_conversation_id(body_json).unwrap_or_else(|| Uuid::new_v4().to_string());
-    let message_text = last_user_message_text(&messages).unwrap_or_else(|| "Continue.".to_string());
+    let message_text =
+        latest_message_snapshot_text(&messages).unwrap_or_else(|| "Continue.".to_string());
     let mut provider_request_body = json!({
         "metadata": windsurf_metadata_from_auth(auth_value),
         "model": mapped_model,
@@ -150,6 +155,19 @@ pub fn build_windsurf_cascade_request_body(
         provider_request_body
             .as_object_mut()?
             .insert("topP".to_string(), top_p.clone());
+    }
+    for field in [
+        "tools",
+        "tool_choice",
+        "toolChoice",
+        "parallel_tool_calls",
+        "response_format",
+    ] {
+        if let Some(value) = body_json.get(field) {
+            provider_request_body
+                .as_object_mut()?
+                .insert(field.to_string(), value.clone());
+        }
     }
 
     if !apply_local_body_rules_with_request_headers(
@@ -268,20 +286,36 @@ fn string_value(value: Option<&Value>) -> Option<String> {
         .map(ToOwned::to_owned)
 }
 
-fn last_user_message_text(messages: &[Value]) -> Option<String> {
+fn latest_message_snapshot_text(messages: &[Value]) -> Option<String> {
     messages
         .iter()
         .rev()
         .filter_map(Value::as_object)
-        .find(|message| {
-            message
-                .get("role")
-                .and_then(Value::as_str)
-                .is_some_and(|role| role == "user")
+        .find_map(|message| {
+            let role = message.get("role").and_then(Value::as_str)?;
+            match role {
+                "user" => openai_content_to_text(message.get("content"))
+                    .map(|value| value.trim().to_string())
+                    .filter(|value| !value.is_empty()),
+                "tool" => {
+                    let content = openai_content_to_text(message.get("content"))
+                        .map(|value| value.trim().to_string())
+                        .filter(|value| !value.is_empty())?;
+                    let tool_call_id = message
+                        .get("tool_call_id")
+                        .and_then(Value::as_str)
+                        .unwrap_or("unknown");
+                    Some(format!(
+                        "<tool_result tool_call_id=\"{}\">\n{content}\n</tool_result>",
+                        escape_xml_attr(tool_call_id)
+                    ))
+                }
+                "assistant" => openai_content_to_text(message.get("content"))
+                    .map(|value| value.trim().to_string())
+                    .filter(|value| !value.is_empty()),
+                _ => None,
+            }
         })
-        .and_then(|message| openai_content_to_text(message.get("content")))
-        .map(|value| value.trim().to_string())
-        .filter(|value| !value.is_empty())
 }
 
 fn openai_content_to_text(value: Option<&Value>) -> Option<String> {
@@ -302,6 +336,14 @@ fn openai_content_to_text(value: Option<&Value>) -> Option<String> {
         }
         _ => None,
     }
+}
+
+fn escape_xml_attr(value: &str) -> String {
+    value
+        .replace('&', "&amp;")
+        .replace('"', "&quot;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
 }
 
 #[cfg(test)]
@@ -414,6 +456,79 @@ mod tests {
         assert_eq!(body["conversationId"], json!("conv-1"));
         assert_eq!(body["message"], json!("hello"));
         assert_eq!(body["maxTokens"], json!(128));
+    }
+
+    #[test]
+    fn preserves_openai_tool_fields_for_native_windsurf_runtime() {
+        let body = build_windsurf_cascade_request_body(
+            &json!({
+                "model": "gpt-5-5-low",
+                "messages": [
+                    {"role": "user", "content": "read Cargo.toml"}
+                ],
+                "tools": [{
+                    "type": "function",
+                    "function": {
+                        "name": "Read",
+                        "parameters": {
+                            "type": "object",
+                            "properties": {"file_path": {"type": "string"}}
+                        }
+                    }
+                }],
+                "tool_choice": "required",
+                "parallel_tool_calls": false,
+                "response_format": {"type": "json_object"}
+            }),
+            "gpt-5-5-low",
+            "Bearer devin-session-token$abc",
+            None,
+            None,
+            false,
+        )
+        .expect("body should build");
+
+        assert_eq!(body["tools"][0]["function"]["name"], json!("Read"));
+        assert_eq!(body["tool_choice"], json!("required"));
+        assert_eq!(body["parallel_tool_calls"], json!(false));
+        assert_eq!(body["response_format"]["type"], json!("json_object"));
+    }
+
+    #[test]
+    fn builds_cascade_request_body_message_snapshot_from_latest_tool_result() {
+        let body = build_windsurf_cascade_request_body(
+            &json!({
+                "model": "gpt-5-5-low",
+                "messages": [
+                    {"role": "user", "content": "read Cargo.toml"},
+                    {
+                        "role": "assistant",
+                        "content": null,
+                        "tool_calls": [{
+                            "id": "call_1",
+                            "type": "function",
+                            "function": {"name": "Read", "arguments": "{\"file_path\":\"Cargo.toml\"}"}
+                        }]
+                    },
+                    {"role": "tool", "tool_call_id": "call_1", "content": "workspace Cargo.toml content"}
+                ]
+            }),
+            "gpt-5-5-low",
+            "Bearer devin-session-token$abc",
+            None,
+            None,
+            false,
+        )
+        .expect("body should build");
+
+        assert!(body["message"]
+            .as_str()
+            .expect("message should be a string")
+            .contains(r#"<tool_result tool_call_id="call_1">"#));
+        assert!(body["message"]
+            .as_str()
+            .expect("message should be a string")
+            .contains("workspace Cargo.toml content"));
     }
 
     #[test]

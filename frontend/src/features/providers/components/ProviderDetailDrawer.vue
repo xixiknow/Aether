@@ -2684,9 +2684,31 @@ function isWindsurfUnavailableKey(key: EndpointAPIKey): boolean {
   return code === 'banned' || code === 'forbidden' || code === 'quarantined'
 }
 
+function getPositiveQuotaNumber(value: unknown): number | undefined {
+  return typeof value === 'number' && Number.isFinite(value) && value > 0 ? value : undefined
+}
+
+function windsurfCooldownHasPositiveReset(key: EndpointAPIKey): boolean {
+  const quota = getQuotaSnapshotForProvider(key, 'windsurf')
+  const rateLimit = quota?.rate_limit
+  if (rateLimit && typeof rateLimit === 'object') {
+    const retryAfterMs =
+      getPositiveQuotaNumber(rateLimit.retry_after_ms)
+      ?? getPositiveQuotaNumber(rateLimit.retryAfterMs)
+    if (retryAfterMs !== undefined) return true
+  }
+
+  const rateLimitWindow = getQuotaWindow(quota, 'rate_limit')
+  return (
+    getPositiveQuotaNumber(rateLimitWindow?.reset_seconds) !== undefined
+    || getPositiveQuotaNumber(rateLimitWindow?.reset_at) !== undefined
+  )
+}
+
 function isWindsurfExhaustedKey(key: EndpointAPIKey): boolean {
   const code = String(getQuotaSnapshotForProvider(key, 'windsurf')?.code || '').trim().toLowerCase()
-  return code === 'exhausted' || code === 'rate_limited' || code === 'rate_limit' || code === 'cooldown'
+  if (code === 'cooldown') return windsurfCooldownHasPositiveReset(key)
+  return code === 'exhausted' || code === 'rate_limited' || code === 'rate_limit'
 }
 
 function getWindsurfQuotaStatusLabel(key: EndpointAPIKey): string {
@@ -2694,7 +2716,8 @@ function getWindsurfQuotaStatusLabel(key: EndpointAPIKey): string {
   const label = quota?.label?.trim()
   if (label) return label
   const code = String(quota?.code || '').trim().toLowerCase()
-  return code === 'rate_limited' || code === 'rate_limit' || code === 'cooldown' ? '速率受限' : '额度耗尽'
+  if (code === 'cooldown') return '冷却中'
+  return code === 'rate_limited' || code === 'rate_limit' ? '速率受限' : '额度耗尽'
 }
 
 function getWindsurfModelPreview(key: EndpointAPIKey): string | null {

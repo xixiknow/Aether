@@ -496,6 +496,31 @@ pub fn json_string_list(value: Option<&Value>) -> Vec<String> {
         .unwrap_or_default()
 }
 
+fn api_format_priority(api_format: &str) -> Option<(usize, usize)> {
+    MODEL_FETCH_FORMAT_PRIORITY
+        .iter()
+        .enumerate()
+        .find_map(|(group_index, group)| {
+            group
+                .iter()
+                .position(|candidate| candidate.eq_ignore_ascii_case(api_format))
+                .map(|format_index| (group_index, format_index))
+        })
+}
+
+fn sorted_api_formats(formats: BTreeSet<String>) -> Vec<String> {
+    let mut formats = formats.into_iter().collect::<Vec<_>>();
+    formats.sort_by(
+        |left, right| match (api_format_priority(left), api_format_priority(right)) {
+            (Some(left_priority), Some(right_priority)) => left_priority.cmp(&right_priority),
+            (Some(_), None) => std::cmp::Ordering::Less,
+            (None, Some(_)) => std::cmp::Ordering::Greater,
+            (None, None) => left.cmp(right),
+        },
+    );
+    formats
+}
+
 pub fn aggregate_models_for_cache(models: &[Value]) -> Vec<Value> {
     let mut aggregated = BTreeMap::<String, serde_json::Map<String, Value>>::new();
 
@@ -557,7 +582,7 @@ pub fn aggregate_models_for_cache(models: &[Value]) -> Vec<Value> {
         if let Some(api_format) = legacy_api_format {
             merged_formats.insert(api_format);
         }
-        let merged_formats = merged_formats
+        let merged_formats = sorted_api_formats(merged_formats)
             .into_iter()
             .map(Value::String)
             .collect::<Vec<_>>();
@@ -874,6 +899,20 @@ mod tests {
         assert_eq!(
             aggregated[0]["api_formats"],
             json!(["openai:chat", "openai:responses"])
+        );
+    }
+
+    #[test]
+    fn aggregate_models_for_cache_orders_api_formats_by_canonical_priority() {
+        let aggregated = aggregate_models_for_cache(&[
+            json!({"id":"claude-sonnet-4-6","api_formats":["claude:messages"]}),
+            json!({"id":"claude-sonnet-4-6","api_formats":["openai:responses"]}),
+            json!({"id":"claude-sonnet-4-6","api_formats":["openai:chat"]}),
+        ]);
+        assert_eq!(aggregated.len(), 1);
+        assert_eq!(
+            aggregated[0]["api_formats"],
+            json!(["openai:chat", "openai:responses", "claude:messages"])
         );
     }
 

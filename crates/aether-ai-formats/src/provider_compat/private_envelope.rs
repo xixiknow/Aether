@@ -325,6 +325,19 @@ pub fn maybe_build_provider_private_stream_normalizer<'a>(
     })
 }
 
+pub fn extract_provider_private_stream_error_body(
+    report_context: Option<&Value>,
+    body: &[u8],
+) -> Option<Value> {
+    if report_context.is_none_or(report_context_is_windsurf_envelope) {
+        if let Some(error_body) = extract_windsurf_connect_json_error_body(body) {
+            return Some(error_body);
+        }
+    }
+
+    extract_stream_error_event_body(body)
+}
+
 impl ProviderPrivateStreamNormalizer<'_> {
     pub fn push_chunk(&mut self, chunk: &[u8]) -> Result<Vec<u8>, AiSurfaceFinalizeError> {
         match &mut self.mode {
@@ -536,8 +549,62 @@ fn build_openai_chat_response_from_text(source: &Value, text: String) -> Value {
 }
 
 pub fn stream_body_contains_error_event(body: &[u8]) -> bool {
+    if extract_windsurf_connect_json_error_body(body).is_some() {
+        return true;
+    }
+    extract_stream_error_event_body(body).is_some()
+}
+
+fn extract_windsurf_connect_json_error_body(body: &[u8]) -> Option<Value> {
+    if !buffer_looks_like_connect_frame(body) {
+        return None;
+    }
+
+    let mut offset = 0usize;
+    while body.len().saturating_sub(offset) >= CONNECT_FRAME_HEADER_BYTES {
+        let flags = body[offset];
+        if flags & !0x03 != 0 {
+            return None;
+        }
+        let len = u32::from_be_bytes([
+            body[offset + 1],
+            body[offset + 2],
+            body[offset + 3],
+            body[offset + 4],
+        ]) as usize;
+        if len > MAX_CONNECT_JSON_FRAME_BYTES {
+            return None;
+        }
+        let frame_end = offset + CONNECT_FRAME_HEADER_BYTES + len;
+        if body.len() < frame_end {
+            return None;
+        }
+        if flags & 0x01 != 0 {
+            return None;
+        }
+        let payload = &body[offset + CONNECT_FRAME_HEADER_BYTES..frame_end];
+        offset = frame_end;
+        if payload.is_empty() {
+            continue;
+        }
+        let parsed: Value = serde_json::from_slice(payload).ok()?;
+        if flags & 0x02 != 0 {
+            if let Some(error) = parsed.get("error").filter(|value| !value.is_null()) {
+                return Some(normalize_provider_private_error_body(error.clone()));
+            }
+            continue;
+        }
+        if looks_like_windsurf_error(&parsed) {
+            return Some(normalize_provider_private_error_body(parsed));
+        }
+    }
+
+    None
+}
+
+fn extract_stream_error_event_body(body: &[u8]) -> Option<Value> {
     let Ok(text) = std::str::from_utf8(body) else {
-        return false;
+        return None;
     };
     let mut current_event_type: Option<String> = None;
     for raw_line in text.lines() {
@@ -572,11 +639,35 @@ pub fn stream_body_contains_error_event(body: &[u8]) -> bool {
             .and_then(Value::as_str)
             .is_some_and(|value| value.eq_ignore_ascii_case("error"))
         {
-            return true;
+            return Some(normalize_provider_private_error_body(event));
         }
         current_event_type = None;
     }
-    false
+    None
+}
+
+fn normalize_provider_private_error_body(error: Value) -> Value {
+    let mut error = if error.get("error").is_some_and(|value| !value.is_null()) {
+        error
+    } else {
+        serde_json::json!({ "error": error })
+    };
+
+    if let Some(error_object) = error.get_mut("error").and_then(Value::as_object_mut) {
+        if !error_object.contains_key("type") {
+            if let Some(kind) = error_object
+                .get("code")
+                .or_else(|| error_object.get("status"))
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+            {
+                error_object.insert("type".to_string(), Value::String(kind.to_string()));
+            }
+        }
+    }
+
+    error
 }
 
 fn clear_private_envelope_context(report_context: &Value) -> Value {
@@ -717,9 +808,9 @@ mod tests {
     use serde_json::json;
 
     use super::{
-        maybe_build_provider_private_stream_normalizer, normalize_provider_private_report_context,
-        normalize_provider_private_response_value, stream_body_contains_error_event,
-        transform_provider_private_stream_line,
+        extract_provider_private_stream_error_body, maybe_build_provider_private_stream_normalizer,
+        normalize_provider_private_report_context, normalize_provider_private_response_value,
+        stream_body_contains_error_event, transform_provider_private_stream_line,
     };
 
     #[test]
@@ -851,6 +942,30 @@ mod tests {
 
         assert!(text.contains(r#""object":"chat.completion.chunk""#));
         assert!(text.contains(r#""content":"frame chunk""#));
+    }
+
+    #[test]
+    fn detects_windsurf_connect_json_trailer_error_frame() {
+        let framed = connect_json_frame(
+            2,
+            br#"{"error":{"code":"resource_exhausted","message":"quota exhausted"}}"#,
+        );
+
+        assert!(stream_body_contains_error_event(&framed));
+    }
+
+    #[test]
+    fn extracts_connect_json_trailer_error_without_report_context() {
+        let framed = connect_json_frame(
+            2,
+            br#"{"error":{"code":"resource_exhausted","message":"quota exhausted"}}"#,
+        );
+
+        let body = extract_provider_private_stream_error_body(None, &framed)
+            .expect("Connect trailer error should decode without report context");
+
+        assert_eq!(body["error"]["code"], json!("resource_exhausted"));
+        assert_eq!(body["error"]["message"], json!("quota exhausted"));
     }
 
     fn connect_json_frame(flags: u8, payload: &[u8]) -> Vec<u8> {
