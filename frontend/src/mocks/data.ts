@@ -9,6 +9,7 @@ import type { User as AdminUser } from '@/api/users'
 import type { AdminApiKeysResponse } from '@/api/admin'
 import type { Profile, UsageResponse } from '@/api/me'
 import type { ProviderWithEndpointsSummary, GlobalModelResponse } from '@/api/endpoints/types'
+import type { ModuleStatus } from '@/api/modules'
 
 // ========== 用户数据 ==========
 
@@ -902,7 +903,7 @@ export const MOCK_USAGE_RESPONSE: UsageResponse = {
 
 // ========== 系统配置 ==========
 
-export const MOCK_SYSTEM_CONFIGS = [
+export const MOCK_SYSTEM_CONFIGS: Array<{ key: string; value: unknown; description?: string }> = [
   { key: 'rate_limit_enabled', value: true, description: '是否启用速率限制' },
   { key: 'default_rate_limit', value: 60, description: '默认速率限制（请求/分钟）' },
   { key: 'cache_enabled', value: true, description: '是否启用缓存' },
@@ -913,6 +914,161 @@ export const MOCK_SYSTEM_CONFIGS = [
   { key: 'proxy_node_metrics_1h_retention_days', value: 180, description: '代理节点 1h 指标保留天数' },
   { key: 'proxy_node_metrics_cleanup_batch_size', value: 5000, description: '代理节点指标每批次清理条数' }
 ]
+
+const MOCK_MODULE_DEFINITIONS: Array<Omit<ModuleStatus, 'active' | 'health'> & { health?: ModuleStatus['health'] }> = [
+  {
+    name: 'management_tokens',
+    display_name: '访问令牌',
+    description: '管理 API 访问令牌，支持细粒度权限控制和 IP 限制',
+    category: 'security',
+    available: true,
+    enabled: true,
+    config_validated: true,
+    config_error: null,
+    admin_route: '/admin/management-tokens',
+    admin_menu_icon: null,
+    admin_menu_group: null,
+    admin_menu_order: 0,
+  },
+  {
+    name: 'ldap',
+    display_name: 'LDAP 认证',
+    description: '支持通过 LDAP/Active Directory 进行用户认证',
+    category: 'auth',
+    available: true,
+    enabled: false,
+    config_validated: false,
+    config_error: '请先配置 LDAP 连接信息',
+    admin_route: '/admin/ldap',
+    admin_menu_icon: 'Users',
+    admin_menu_group: 'system',
+    admin_menu_order: 50,
+  },
+  {
+    name: 'oauth',
+    display_name: 'OAuth 登录',
+    description: '支持通过第三方 OAuth Provider 登录/绑定账号',
+    category: 'auth',
+    available: true,
+    enabled: true,
+    config_validated: true,
+    config_error: null,
+    admin_route: '/admin/oauth',
+    admin_menu_icon: 'Key',
+    admin_menu_group: null,
+    admin_menu_order: 55,
+  },
+  {
+    name: 'notification_email',
+    display_name: '异常通知',
+    description: '为 5xx 异常发送邮件通知，可在模块管理中启用或禁用',
+    category: 'integration',
+    available: true,
+    enabled: false,
+    config_validated: false,
+    config_error: '请先完成邮件配置（SMTP）',
+    admin_route: null,
+    admin_menu_icon: 'Mail',
+    admin_menu_group: 'system',
+    admin_menu_order: 58,
+  },
+  {
+    name: 'chat_pii_redaction',
+    display_name: '敏感信息保护',
+    description: '发送给供应商前将聊天消息中的敏感信息替换为占位符，返回客户端前自动还原。',
+    category: 'security',
+    available: true,
+    enabled: false,
+    config_validated: true,
+    config_error: null,
+    admin_route: '/admin/modules/chat-pii-redaction',
+    admin_menu_icon: 'ShieldCheck',
+    admin_menu_group: 'system',
+    admin_menu_order: 59,
+  },
+  {
+    name: 'model_directives',
+    display_name: '模型后缀参数',
+    description: '允许通过模型名后缀覆盖推理参数',
+    category: 'integration',
+    available: true,
+    enabled: true,
+    config_validated: true,
+    config_error: null,
+    admin_route: '/admin/model-directives',
+    admin_menu_icon: 'SlidersHorizontal',
+    admin_menu_group: null,
+    admin_menu_order: 59,
+  },
+  {
+    name: 'gemini_files',
+    display_name: '文件缓存',
+    description: '管理 Gemini Files API 上传的文件，支持文件上传、查看和删除',
+    category: 'integration',
+    available: true,
+    enabled: false,
+    config_validated: false,
+    config_error: '至少启用一个具有「Gemini 文件 API」能力的 Key',
+    admin_route: '/admin/gemini-files',
+    admin_menu_icon: 'FileUp',
+    admin_menu_group: 'system',
+    admin_menu_order: 60,
+    health: 'degraded',
+  },
+  {
+    name: 'proxy_nodes',
+    display_name: '代理节点',
+    description: '添加Http/Socket代理节点, 或使用Aether-Proxy自动连接代理节点.',
+    category: 'integration',
+    available: true,
+    enabled: true,
+    config_validated: true,
+    config_error: null,
+    admin_route: '/admin/proxy-nodes',
+    admin_menu_icon: 'Server',
+    admin_menu_group: 'system',
+    admin_menu_order: 60,
+  },
+  {
+    name: 'payment_gateways',
+    display_name: '支付配置',
+    description: '配置易支付、支付宝官方、微信支付官方和 Stripe 等支付网关',
+    category: 'integration',
+    available: true,
+    enabled: false,
+    config_validated: true,
+    config_error: null,
+    admin_route: '/admin/payment-gateways',
+    admin_menu_icon: 'CreditCard',
+    admin_menu_group: null,
+    admin_menu_order: 70,
+  },
+  {
+    name: 'referral',
+    display_name: '邀请返利',
+    description: '管理用户邀请关系与返利记录，支持比例返利和人头返利',
+    category: 'integration',
+    available: true,
+    enabled: false,
+    config_validated: true,
+    config_error: null,
+    admin_route: '/admin/referrals',
+    admin_menu_icon: 'Gift',
+    admin_menu_group: 'management',
+    admin_menu_order: 75,
+  },
+]
+
+export const MOCK_MODULE_STATUSES: Record<string, ModuleStatus> = Object.fromEntries(
+  MOCK_MODULE_DEFINITIONS.map(module => [
+    module.name,
+    {
+      ...module,
+      active: module.available && module.enabled && module.config_validated,
+      health: module.health ?? 'healthy',
+    },
+  ])
+) as Record<string, ModuleStatus>
 
 // ========== API 格式 ==========
 
