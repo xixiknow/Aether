@@ -1556,6 +1556,39 @@ pub(crate) fn openai_responses_input_to_canonical_messages(
                             extensions: BTreeMap::new(),
                         });
                     }
+                    "web_search_call" => {
+                        let id = item_object
+                            .get("id")
+                            .and_then(Value::as_str)
+                            .map(str::trim)
+                            .filter(|value| !value.is_empty())
+                            .map(ToOwned::to_owned)
+                            .unwrap_or_else(|| {
+                                let generated =
+                                    format!("call_auto_{next_generated_tool_call_index}");
+                                next_generated_tool_call_index += 1;
+                                generated
+                            });
+                        let query = item_object
+                            .get("action")
+                            .and_then(Value::as_object)
+                            .and_then(|action| action.get("query"))
+                            .and_then(Value::as_str)
+                            .unwrap_or_default();
+                        messages.push(CanonicalMessage {
+                            role: CanonicalRole::Assistant,
+                            content: vec![CanonicalContentBlock::ToolUse {
+                                id,
+                                name: "web_search".to_string(),
+                                input: json!({ "query": query }),
+                                extensions: openai_responses_extensions(
+                                    item_object,
+                                    &["type", "id", "status", "action"],
+                                ),
+                            }],
+                            extensions: BTreeMap::new(),
+                        });
+                    }
                     "function_call_output" => {
                         let id = item_object
                             .get("call_id")
@@ -1726,6 +1759,30 @@ pub(crate) fn openai_responses_output_to_canonical_blocks(
                     extensions: openai_responses_extensions(
                         item_object,
                         &["type", "id", "call_id", "name", "arguments", "status"],
+                    ),
+                });
+            }
+            "web_search_call" => {
+                let id = item_object
+                    .get("id")
+                    .and_then(Value::as_str)
+                    .map(str::trim)
+                    .filter(|value| !value.is_empty())
+                    .map(ToOwned::to_owned)
+                    .unwrap_or_else(|| format!("call_auto_{index}"));
+                let query = item_object
+                    .get("action")
+                    .and_then(Value::as_object)
+                    .and_then(|action| action.get("query"))
+                    .and_then(Value::as_str)
+                    .unwrap_or_default();
+                blocks.push(CanonicalContentBlock::ToolUse {
+                    id,
+                    name: "web_search".to_string(),
+                    input: json!({ "query": query }),
+                    extensions: openai_responses_extensions(
+                        item_object,
+                        &["type", "id", "status", "action"],
                     ),
                 });
             }

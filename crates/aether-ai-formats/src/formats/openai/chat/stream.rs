@@ -1299,6 +1299,7 @@ struct OpenAIResponsesClientToolState {
     name: String,
     arguments: String,
     output_index: Option<usize>,
+    web_search: bool,
 }
 
 #[derive(Clone, Default)]
@@ -1308,6 +1309,23 @@ struct OpenAIResponsesClientToolResultState {
     content: String,
     output_index: Option<usize>,
     item_started: bool,
+}
+
+fn is_responses_web_search_tool(name: &str) -> bool {
+    matches!(name, "web_search" | "web_search_preview")
+}
+
+fn web_search_query_from_arguments(arguments: &str) -> String {
+    serde_json::from_str::<Value>(arguments)
+        .ok()
+        .and_then(|value| {
+            value
+                .get("query")
+                .and_then(Value::as_str)
+                .map(ToOwned::to_owned)
+                .or_else(|| value.as_str().map(ToOwned::to_owned))
+        })
+        .unwrap_or_default()
 }
 
 #[derive(Default)]
@@ -1985,6 +2003,26 @@ impl OpenAIResponsesClientEmitter {
             } else {
                 state.name.clone()
             };
+            if state.web_search {
+                out.extend(self.encode_response_event(
+                    "response.output_item.done",
+                    json!({
+                        "type": "response.output_item.done",
+                        "response_id": self.response_id(),
+                        "output_index": output_index,
+                        "item": {
+                            "type": "web_search_call",
+                            "id": item_id,
+                            "status": "completed",
+                            "action": {
+                                "type": "search",
+                                "query": web_search_query_from_arguments(&state.arguments),
+                            },
+                        }
+                    }),
+                )?);
+                continue;
+            }
             out.extend(self.encode_response_event(
                 "response.function_call_arguments.done",
                 json!({
@@ -2143,20 +2181,32 @@ impl OpenAIResponsesClientEmitter {
         }
         for (index, state) in &self.tool_calls {
             if let Some(output_index) = state.output_index {
+                let item_id = if state.call_id.is_empty() {
+                    build_generated_tool_call_id(*index)
+                } else {
+                    state.call_id.clone()
+                };
+                if state.web_search {
+                    ordered_output.push((
+                        output_index,
+                        json!({
+                            "type": "web_search_call",
+                            "id": item_id,
+                            "status": "completed",
+                            "action": {
+                                "type": "search",
+                                "query": web_search_query_from_arguments(&state.arguments),
+                            },
+                        }),
+                    ));
+                    continue;
+                }
                 ordered_output.push((
                     output_index,
                     json!({
                         "type": "function_call",
-                        "id": if state.call_id.is_empty() {
-                            build_generated_tool_call_id(*index)
-                        } else {
-                            state.call_id.clone()
-                        },
-                        "call_id": if state.call_id.is_empty() {
-                            build_generated_tool_call_id(*index)
-                        } else {
-                            state.call_id.clone()
-                        },
+                        "id": item_id.clone(),
+                        "call_id": item_id,
                         "name": if state.name.is_empty() {
                             "unknown".to_string()
                         } else {
@@ -2322,22 +2372,36 @@ impl OpenAIResponsesClientEmitter {
                 let state = self.tool_calls.entry(index).or_default();
                 state.call_id = call_id.clone();
                 state.name = name.clone();
+                state.web_search = is_responses_web_search_tool(&name);
                 let emitted_call_id = state.call_id.clone();
                 let emitted_name = state.name.clone();
+                let item = if state.web_search {
+                    json!({
+                        "type": "web_search_call",
+                        "id": emitted_call_id,
+                        "status": "in_progress",
+                        "action": {
+                            "type": "search",
+                            "query": "",
+                        },
+                    })
+                } else {
+                    json!({
+                        "type": "function_call",
+                        "id": call_id,
+                        "call_id": emitted_call_id,
+                        "name": emitted_name,
+                        "arguments": "",
+                        "status": "in_progress",
+                    })
+                };
                 out.extend(self.encode_response_event(
                     "response.output_item.added",
                     json!({
                         "type": "response.output_item.added",
                         "response_id": response_id,
                         "output_index": output_index,
-                        "item": {
-                            "type": "function_call",
-                            "id": call_id,
-                            "call_id": emitted_call_id,
-                            "name": emitted_name,
-                            "arguments": "",
-                            "status": "in_progress",
-                        }
+                        "item": item
                     }),
                 )?);
                 Ok(out)
@@ -2348,6 +2412,9 @@ impl OpenAIResponsesClientEmitter {
                 let response_id = self.response_id().to_string();
                 let state = self.tool_calls.entry(index).or_default();
                 state.arguments.push_str(&arguments);
+                if state.web_search {
+                    return Ok(out);
+                }
                 let item_id = if state.call_id.is_empty() {
                     build_generated_tool_call_id(index)
                 } else {
@@ -3165,6 +3232,56 @@ mod tests {
         assert!(sse.contains("\"type\":\"function_call_output\""));
         assert!(sse.contains("\"call_id\":\"call_123\""));
         assert!(sse.contains("\"output\":\"{\\\"ok\\\":true}\""));
+    }
+
+    #[test]
+    fn openai_responses_client_emitter_emits_web_search_call_item() {
+        let mut emitter = OpenAIResponsesClientEmitter::default();
+        let mut bytes = emitter
+            .emit(CanonicalStreamFrame {
+                id: "resp_123".to_string(),
+                model: "gpt-5-5-low".to_string(),
+                event: CanonicalStreamEvent::ToolCallStart {
+                    index: 0,
+                    call_id: "call_ws_1".to_string(),
+                    name: "web_search".to_string(),
+                },
+            })
+            .expect("tool start should encode");
+        bytes.extend(
+            emitter
+                .emit(CanonicalStreamFrame {
+                    id: "resp_123".to_string(),
+                    model: "gpt-5-5-low".to_string(),
+                    event: CanonicalStreamEvent::ToolCallArgumentsDelta {
+                        index: 0,
+                        arguments: r#"{"query":"today tech"}"#.to_string(),
+                    },
+                })
+                .expect("arguments should encode"),
+        );
+        bytes.extend(
+            emitter
+                .emit(CanonicalStreamFrame {
+                    id: "resp_123".to_string(),
+                    model: "gpt-5-5-low".to_string(),
+                    event: CanonicalStreamEvent::Finish {
+                        finish_reason: Some("tool_calls".to_string()),
+                        usage: None,
+                    },
+                })
+                .expect("finish should encode"),
+        );
+
+        let sse = String::from_utf8(bytes).expect("sse should be utf8");
+        assert!(sse.contains("event: response.output_item.added\n"));
+        assert!(sse.contains(r#""type":"web_search_call""#));
+        assert!(sse.contains(r#""status":"in_progress""#));
+        assert!(sse.contains(r#""query":"""#));
+        assert!(sse.contains(r#""type":"search""#));
+        assert!(sse.contains("event: response.output_item.done\n"));
+        assert!(sse.contains(r#""query":"today tech""#));
+        assert!(!sse.contains("response.function_call_arguments.delta"));
     }
 
     #[test]

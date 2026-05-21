@@ -1739,7 +1739,7 @@ fn clone_usage_capture_value(value: Option<&Value>) -> Option<Value> {
 }
 
 fn clone_usage_body_value(value: Option<&Value>) -> Option<Value> {
-    value.cloned()
+    value.cloned().map(mask_sensitive_body_fields)
 }
 
 fn sanitize_usage_event_capture_fields(mut data: UsageEventData) -> UsageEventData {
@@ -2057,6 +2057,52 @@ fn mask_sensitive_headers_in_json_value(value: Option<Value>) -> Option<Value> {
     Some(value)
 }
 
+fn mask_sensitive_body_fields(mut value: Value) -> Value {
+    mask_sensitive_body_fields_in_place(&mut value);
+    value
+}
+
+fn mask_sensitive_body_fields_in_place(value: &mut Value) {
+    match value {
+        Value::Object(object) => {
+            for (key, value) in object.iter_mut() {
+                if is_sensitive_body_key(key) {
+                    let replacement = if value.is_null() {
+                        Value::Null
+                    } else if let Some(text) = value.as_str() {
+                        Value::String(mask_sensitive_header_value(text))
+                    } else {
+                        Value::String(mask_sensitive_header_value(&value.to_string()))
+                    };
+                    *value = replacement;
+                } else {
+                    mask_sensitive_body_fields_in_place(value);
+                }
+            }
+        }
+        Value::Array(items) => {
+            for item in items {
+                mask_sensitive_body_fields_in_place(item);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn is_sensitive_body_key(key: &str) -> bool {
+    let normalized = key
+        .chars()
+        .filter(|ch| ch.is_ascii_alphanumeric())
+        .collect::<String>()
+        .to_ascii_lowercase();
+    normalized.contains("token")
+        || normalized.contains("apikey")
+        || normalized.contains("password")
+        || normalized.contains("authorization")
+        || normalized.contains("secret")
+        || normalized == "cookie"
+}
+
 fn resolve_error_category(status_code: u16, event_type: UsageEventType) -> Option<String> {
     match event_type {
         UsageEventType::Cancelled => Some("cancelled".to_string()),
@@ -2111,6 +2157,11 @@ fn decode_body_for_storage(body_base64: Option<&str>) -> Option<Value> {
     let bytes = base64::engine::general_purpose::STANDARD
         .decode(body_base64)
         .ok()?;
+    if let Some(error_body) =
+        aether_ai_formats::api::extract_provider_private_stream_error_body(None, &bytes)
+    {
+        return Some(error_body);
+    }
     if let Ok(json_body) = serde_json::from_slice::<Value>(&bytes) {
         return Some(json_body);
     }
@@ -2968,12 +3019,12 @@ mod tests {
         build_stream_terminal_usage_event, build_streaming_usage_record,
         build_sync_terminal_usage_event, build_sync_terminal_usage_payload_seed,
         build_sync_terminal_usage_seed, build_terminal_usage_context_seed,
-        build_terminal_usage_event_from_seed, build_usage_event_data_seed,
+        build_terminal_usage_event_from_seed, build_usage_event_data_seed, decode_body_for_storage,
         extract_token_counts_from_json, extract_token_counts_from_value, headers_to_json,
-        mask_header_value, mask_sensitive_headers_in_json_value, parse_sse_body_for_storage,
-        resolve_error_message, trim_owned_non_empty_string, LifecycleUsageSeed, TerminalUsageSeed,
-        UsageBodyRefsSeed, UsageBodyStatesSeed, UsageRoutingSeed, UsageTerminalState,
-        MAX_USAGE_CAPTURE_BYTES, MAX_USAGE_CAPTURE_DEPTH,
+        mask_header_value, mask_sensitive_body_fields, mask_sensitive_headers_in_json_value,
+        parse_sse_body_for_storage, resolve_error_message, trim_owned_non_empty_string,
+        LifecycleUsageSeed, TerminalUsageSeed, UsageBodyRefsSeed, UsageBodyStatesSeed,
+        UsageRoutingSeed, UsageTerminalState, MAX_USAGE_CAPTURE_BYTES, MAX_USAGE_CAPTURE_DEPTH,
     };
     use crate::{
         build_upsert_usage_record_from_event, GatewayStreamReportRequest, GatewaySyncReportRequest,
@@ -3375,6 +3426,114 @@ mod tests {
         assert_eq!(
             event.data.provider_request_body,
             Some(json!({"input": "safe"}))
+        );
+    }
+
+    #[test]
+    fn usage_body_capture_redacts_nested_provider_secrets() {
+        let masked = mask_sensitive_body_fields(json!({
+            "metadata": {
+                "apiKey": "devin-session-token$secret-value",
+                "nested": {
+                    "sessionToken": "session-token-secret"
+                }
+            },
+            "password": "plain-password",
+            "messages": [{"content": "safe text"}]
+        }));
+
+        assert_ne!(
+            masked.pointer("/metadata/apiKey").and_then(Value::as_str),
+            Some("devin-session-token$secret-value")
+        );
+        assert_ne!(
+            masked
+                .pointer("/metadata/nested/sessionToken")
+                .and_then(Value::as_str),
+            Some("session-token-secret")
+        );
+        assert_ne!(
+            masked.get("password").and_then(Value::as_str),
+            Some("plain-password")
+        );
+        assert_eq!(
+            masked
+                .pointer("/messages/0/content")
+                .and_then(Value::as_str),
+            Some("safe text")
+        );
+    }
+
+    #[test]
+    fn sync_terminal_usage_redacts_provider_request_body_secrets_from_context() {
+        let plan = ExecutionPlan {
+            request_id: "req-sync-redact-provider-request-1".to_string(),
+            candidate_id: Some("cand-sync-redact-provider-request-1".to_string()),
+            provider_name: Some("Windsurf".to_string()),
+            provider_id: "provider-windsurf".to_string(),
+            endpoint_id: "endpoint-windsurf".to_string(),
+            key_id: "key-windsurf".to_string(),
+            method: "POST".to_string(),
+            url: "https://server.codeium.com/exa.api_server_pb.ApiServerService/GetChatMessage"
+                .to_string(),
+            headers: BTreeMap::new(),
+            content_type: Some("application/json".to_string()),
+            content_encoding: None,
+            body: RequestBody::from_json(json!({"model": "windsurf-model"})),
+            stream: false,
+            client_api_format: "openai:chat".to_string(),
+            provider_api_format: "openai:chat".to_string(),
+            model_name: Some("windsurf-model".to_string()),
+            proxy: None,
+            transport_profile: None,
+            timeouts: None,
+        };
+        let payload = GatewaySyncReportRequest {
+            trace_id: "trace-sync-redact-provider-request-1".to_string(),
+            report_kind: "openai_chat_sync_success".to_string(),
+            report_context: Some(json!({
+                "client_api_format": "openai:chat",
+                "provider_api_format": "openai:chat",
+                "provider_request_body": {
+                    "metadata": {
+                        "apiKey": "devin-session-token$abc",
+                        "sessionToken": "session-token-secret"
+                    },
+                    "message": "safe prompt"
+                }
+            })),
+            status_code: 200,
+            headers: BTreeMap::new(),
+            body_json: Some(json!({"id": "resp_1", "choices": []})),
+            client_body_json: None,
+            body_base64: None,
+            telemetry: None,
+        };
+
+        let event =
+            build_sync_terminal_usage_event(&plan, payload.report_context.as_ref(), &payload)
+                .expect("terminal usage should build");
+        let provider_request = event
+            .data
+            .provider_request_body
+            .as_ref()
+            .expect("provider request body should be captured");
+
+        assert_ne!(
+            provider_request
+                .pointer("/metadata/apiKey")
+                .and_then(Value::as_str),
+            Some("devin-session-token$abc")
+        );
+        assert_ne!(
+            provider_request
+                .pointer("/metadata/sessionToken")
+                .and_then(Value::as_str),
+            Some("session-token-secret")
+        );
+        assert_eq!(
+            provider_request.pointer("/message").and_then(Value::as_str),
+            Some("safe prompt")
         );
     }
 
@@ -5246,6 +5405,27 @@ mod tests {
         assert_eq!(
             resolve_error_message(500, None, Some(body_base64.as_str())),
             Some("upstream exploded".to_string()),
+        );
+    }
+
+    #[test]
+    fn decode_body_for_storage_extracts_connect_json_error_frames() {
+        let payload = br#"{"error":{"code":"resource_exhausted","message":"quota exhausted"}}"#;
+        let mut framed = Vec::new();
+        framed.push(2);
+        framed.extend_from_slice(&(payload.len() as u32).to_be_bytes());
+        framed.extend_from_slice(payload);
+        let body_base64 = base64::engine::general_purpose::STANDARD.encode(framed);
+
+        assert_eq!(
+            decode_body_for_storage(Some(body_base64.as_str())),
+            Some(json!({
+                "error": {
+                    "code": "resource_exhausted",
+                    "message": "quota exhausted",
+                    "type": "resource_exhausted"
+                }
+            }))
         );
     }
 

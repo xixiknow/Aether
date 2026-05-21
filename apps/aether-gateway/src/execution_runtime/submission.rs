@@ -372,7 +372,10 @@ pub(crate) fn resolve_core_success_background_report_kind(report_kind: &str) -> 
     core_success_background_report_kind(report_kind).map(ToOwned::to_owned)
 }
 
-fn resolve_local_sync_error_status_code(status_code: u16, body_json: &serde_json::Value) -> u16 {
+pub(crate) fn resolve_local_sync_error_status_code(
+    status_code: u16,
+    body_json: &serde_json::Value,
+) -> u16 {
     if (400..600).contains(&status_code) {
         return status_code;
     }

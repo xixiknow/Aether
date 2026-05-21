@@ -40,6 +40,7 @@ const AUTO_REMOVABLE_ACCOUNT_STATE_CODES: &[&str] = &[
     "account_banned",
     "account_suspended",
     "account_disabled",
+    "account_quarantined",
     "workspace_deactivated",
     "account_forbidden",
 ];
@@ -275,7 +276,7 @@ fn resolve_from_metadata(
     upstream_metadata: Option<&Value>,
 ) -> Option<PoolAccountState> {
     for source in metadata_sources(provider_type, upstream_metadata) {
-        if json_bool(source.get("is_banned")) {
+        if json_bool(source.get("is_banned")) || json_bool(source.get("banned")) {
             let reason = extract_reason(
                 source,
                 &["ban_reason", "forbidden_reason", "reason", "message"],
@@ -285,6 +286,18 @@ fn resolve_from_metadata(
                 blocked: true,
                 code: Some("account_banned".to_string()),
                 label: Some("账号封禁".to_string()),
+                reason: Some(reason),
+                source: Some("metadata".to_string()),
+                recoverable: false,
+            });
+        }
+        if json_bool(source.get("is_quarantined")) || json_bool(source.get("quarantined")) {
+            let reason = extract_reason(source, &["quarantine_reason", "reason", "message"])
+                .unwrap_or_else(|| "账号处于隔离状态".to_string());
+            return Some(PoolAccountState {
+                blocked: true,
+                code: Some("account_quarantined".to_string()),
+                label: Some("账号隔离".to_string()),
                 reason: Some(reason),
                 source: Some("metadata".to_string()),
                 recoverable: false,
@@ -572,6 +585,35 @@ mod tests {
         assert_eq!(state.code.as_deref(), None);
         assert_eq!(state.label.as_deref(), None);
         assert!(!should_auto_remove_account_state(&state));
+    }
+
+    #[test]
+    fn resolves_windsurf_banned_and_quarantined_metadata_aliases() {
+        let banned = resolve_pool_account_state(
+            Some("windsurf"),
+            Some(&json!({
+                "windsurf": {
+                    "banned": true,
+                    "reason": "forbidden"
+                }
+            })),
+            None,
+        );
+        assert!(banned.blocked);
+        assert_eq!(banned.code.as_deref(), Some("account_banned"));
+
+        let quarantined = resolve_pool_account_state(
+            Some("windsurf"),
+            Some(&json!({
+                "windsurf": {
+                    "quarantined": true
+                }
+            })),
+            None,
+        );
+        assert!(quarantined.blocked);
+        assert_eq!(quarantined.code.as_deref(), Some("account_quarantined"));
+        assert!(should_auto_remove_account_state(&quarantined));
     }
 
     #[test]
