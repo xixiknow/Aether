@@ -182,6 +182,8 @@ async fn run_tunnel(config: Config) -> anyhow::Result<()> {
             aether_url: config.aether_url.clone(),
             management_token: config.management_token.clone(),
             node_name: None,
+            tunnel_security: Some(config.tunnel_security),
+            tunnel_encryption_key: config.tunnel_encryption_key.clone(),
         }]
     };
 
