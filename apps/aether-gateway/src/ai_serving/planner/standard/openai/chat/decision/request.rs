@@ -16,7 +16,8 @@ use crate::ai_serving::planner::common::{
     request_requires_body_stream_field, OPENAI_CHAT_STREAM_PLAN_KIND,
 };
 use crate::ai_serving::planner::gemini_cli::{
-    build_gemini_cli_v1internal_payload, GeminiCliV1InternalPayloadError,
+    build_gemini_cli_v1internal_provider_request, GeminiCliV1InternalRequestError,
+    GeminiCliV1InternalRequestInput,
 };
 use crate::ai_serving::planner::standard::{
     apply_codex_openai_responses_special_body_edits, apply_codex_openai_responses_special_headers,
@@ -42,7 +43,7 @@ use crate::ai_serving::transport::{
     build_openai_image_headers, build_openai_image_upstream_url,
     build_standard_provider_request_headers, is_gemini_cli_provider_transport,
     openai_image_transport_unsupported_reason, resolve_openai_image_auth, GrokHeaderInput,
-    ProviderOpenAiImageHeadersInput, StandardProviderRequestHeadersInput, GEMINI_CLI_USER_AGENT,
+    ProviderOpenAiImageHeadersInput, StandardProviderRequestHeadersInput,
     GEMINI_CLI_V1INTERNAL_ENVELOPE_NAME, GROK_CHAT_PATH,
 };
 use crate::ai_serving::{
@@ -881,119 +882,101 @@ async fn build_gemini_cli_openai_chat_cross_format_payload_parts(
 ) -> Option<LocalOpenAiChatCandidatePayloadParts> {
     let candidate = &eligible.candidate;
     let effective_headers = input.effective_headers(&parts.headers);
-    let resolved = match build_gemini_cli_v1internal_payload(
-        state,
-        transport,
-        trace_id,
-        &mapped_model,
-        &gemini_request_body,
-    )
-    .await
-    {
-        Ok(resolved) => resolved,
-        Err(GeminiCliV1InternalPayloadError::ProjectUnavailable) => {
-            mark_skipped_local_openai_chat_candidate(
-                state,
-                input,
-                trace_id,
-                candidate,
-                candidate_index,
-                candidate_id,
-                "transport_auth_unavailable",
-            )
-            .await;
-            return None;
-        }
-        Err(GeminiCliV1InternalPayloadError::EnvelopeUnsupported) => {
-            mark_skipped_local_openai_chat_candidate_with_extra_data(
-                state,
-                input,
-                trace_id,
-                candidate,
-                candidate_index,
-                candidate_id,
-                "provider_request_body_build_failed",
-                request_body_build_failure_extra_data(
-                    original_body_json,
-                    "openai:chat",
-                    provider_api_format,
-                ),
-            )
-            .await;
-            return None;
-        }
-    };
-    let provider_request_body = resolved.body;
-    let resolved_transport = resolved.transport;
-
-    let Some(upstream_url) = build_cross_format_openai_chat_upstream_url(
-        parts,
-        &resolved_transport,
-        &mapped_model,
-        provider_api_format,
-        upstream_is_stream,
-    ) else {
-        mark_skipped_local_openai_chat_candidate_with_failure_diagnostic(
+    let resolved =
+        match build_gemini_cli_v1internal_provider_request(GeminiCliV1InternalRequestInput {
             state,
-            input,
+            parts,
+            transport,
             trace_id,
-            candidate,
-            candidate_index,
-            candidate_id,
-            "upstream_url_missing",
-            CandidateFailureDiagnostic::upstream_url_missing(
-                "openai:chat",
-                provider_api_format,
-                "openai_chat_gemini_cli_url",
-            ),
-        )
-        .await;
-        return None;
-    };
-
-    let extra_headers =
-        BTreeMap::from([("user-agent".to_string(), GEMINI_CLI_USER_AGENT.to_string())]);
-    let Some(resolved_headers) =
-        build_standard_provider_request_headers(StandardProviderRequestHeadersInput {
-            transport: &resolved_transport,
+            mapped_model: &mapped_model,
             provider_api_format,
-            same_format: false,
-            headers: effective_headers,
             auth_header: &auth_header,
             auth_value: &auth_value,
-            extra_headers: &extra_headers,
-            header_rules: resolved_transport.endpoint.header_rules.as_ref(),
-            provider_request_body: &provider_request_body,
+            request_headers: effective_headers,
             original_request_body: original_body_json,
+            gemini_request_body: &gemini_request_body,
             upstream_is_stream,
         })
-    else {
-        mark_skipped_local_openai_chat_candidate_with_failure_diagnostic(
-            state,
-            input,
-            trace_id,
-            candidate,
-            candidate_index,
-            candidate_id,
-            "transport_header_rules_apply_failed",
-            CandidateFailureDiagnostic::header_rules_apply_failed(
-                "openai:chat",
-                provider_api_format,
-                "openai_chat_gemini_cli_headers",
-            ),
-        )
-        .await;
-        return None;
-    };
-    let mut provider_request_headers = resolved_headers.headers;
+        .await
+        {
+            Ok(resolved) => resolved,
+            Err(GeminiCliV1InternalRequestError::ProjectUnavailable) => {
+                mark_skipped_local_openai_chat_candidate(
+                    state,
+                    input,
+                    trace_id,
+                    candidate,
+                    candidate_index,
+                    candidate_id,
+                    "transport_auth_unavailable",
+                )
+                .await;
+                return None;
+            }
+            Err(GeminiCliV1InternalRequestError::EnvelopeUnsupported) => {
+                mark_skipped_local_openai_chat_candidate_with_extra_data(
+                    state,
+                    input,
+                    trace_id,
+                    candidate,
+                    candidate_index,
+                    candidate_id,
+                    "provider_request_body_build_failed",
+                    request_body_build_failure_extra_data(
+                        original_body_json,
+                        "openai:chat",
+                        provider_api_format,
+                    ),
+                )
+                .await;
+                return None;
+            }
+            Err(GeminiCliV1InternalRequestError::UpstreamUrlUnavailable) => {
+                mark_skipped_local_openai_chat_candidate_with_failure_diagnostic(
+                    state,
+                    input,
+                    trace_id,
+                    candidate,
+                    candidate_index,
+                    candidate_id,
+                    "upstream_url_missing",
+                    CandidateFailureDiagnostic::upstream_url_missing(
+                        "openai:chat",
+                        provider_api_format,
+                        "openai_chat_gemini_cli_url",
+                    ),
+                )
+                .await;
+                return None;
+            }
+            Err(GeminiCliV1InternalRequestError::HeaderRulesApplyFailed) => {
+                mark_skipped_local_openai_chat_candidate_with_failure_diagnostic(
+                    state,
+                    input,
+                    trace_id,
+                    candidate,
+                    candidate_index,
+                    candidate_id,
+                    "transport_header_rules_apply_failed",
+                    CandidateFailureDiagnostic::header_rules_apply_failed(
+                        "openai:chat",
+                        provider_api_format,
+                        "openai_chat_gemini_cli_headers",
+                    ),
+                )
+                .await;
+                return None;
+            }
+        };
+    let mut provider_request_headers = resolved.headers.headers;
     apply_codex_openai_responses_special_headers(
         &mut provider_request_headers,
-        &provider_request_body,
+        &resolved.body,
         effective_headers,
-        resolved_transport.provider.provider_type.as_str(),
+        resolved.transport.provider.provider_type.as_str(),
         provider_api_format,
         Some(trace_id),
-        resolved_transport.key.decrypted_auth_config.as_deref(),
+        resolved.transport.key.decrypted_auth_config.as_deref(),
     );
     request_identity_response_encoding_when_redacted(
         &mut provider_request_headers,
@@ -1010,18 +993,18 @@ async fn build_gemini_cli_openai_chat_cross_format_payload_parts(
 
     Some(LocalOpenAiChatCandidatePayloadParts {
         client_api_format: "openai:chat".to_string(),
-        auth_header: resolved_headers.auth_header,
-        auth_value: resolved_headers.auth_value,
+        auth_header: resolved.headers.auth_header,
+        auth_value: resolved.headers.auth_value,
         mapped_model,
         provider_api_format: provider_api_format.to_string(),
-        provider_request_body,
+        provider_request_body: resolved.body,
         provider_request_headers,
-        upstream_url,
+        upstream_url: resolved.upstream_url,
         execution_strategy,
         conversion_mode,
         report_kind: resolved_report_kind,
         envelope_name: Some(GEMINI_CLI_V1INTERNAL_ENVELOPE_NAME),
-        transport: resolved_transport,
+        transport: resolved.transport,
         request_redacted,
         transport_profile: None,
         image_request_summary: None,
@@ -2072,7 +2055,7 @@ mod tests {
                 .provider_request_headers
                 .get("user-agent")
                 .map(String::as_str),
-            Some(GEMINI_CLI_USER_AGENT)
+            Some(crate::ai_serving::transport::GEMINI_CLI_USER_AGENT)
         );
         assert_eq!(payload.provider_request_body["model"], "gemini-2.5-pro");
         assert_eq!(payload.provider_request_body["project"], "test-project");
