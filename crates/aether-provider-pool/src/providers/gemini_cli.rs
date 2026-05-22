@@ -69,7 +69,6 @@ pub fn build_gemini_cli_pool_quota_request(
         content_type: Some("application/json".to_string()),
         json_body: Some(json!({
             "project": project_id,
-            "userAgent": GEMINI_CLI_USER_AGENT,
         })),
         client_api_format: "gemini:generate_content".to_string(),
         provider_api_format: "gemini_cli:retrieve_user_quota".to_string(),

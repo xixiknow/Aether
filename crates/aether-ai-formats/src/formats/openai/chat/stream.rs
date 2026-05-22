@@ -1180,6 +1180,23 @@ impl OpenAIResponsesProviderState {
                     }
                 }
             }
+            event_type if openai_stream_payload_is_terminal_error(&value) => {
+                self.finished = true;
+                let mut payload = value.clone();
+                if event_type != "response.failed"
+                    && event_type != "response.incomplete"
+                    && event_type != "error"
+                {
+                    payload = openai_stream_terminal_error_body(&value).unwrap_or(payload);
+                    if let Some(object) = payload.as_object_mut() {
+                        object.insert(
+                            "type".to_string(),
+                            Value::String("response.failed".to_string()),
+                        );
+                    }
+                }
+                out.push(self.unknown_frame(report_context, payload));
+            }
             "response.completed" => {
                 let Some(response) = value.get("response").and_then(Value::as_object) else {
                     return Ok(out);
@@ -1291,6 +1308,8 @@ pub struct OpenAIChatClientEmitter {
     model: Option<String>,
     started: bool,
     finished: bool,
+    next_tool_call_index: usize,
+    tool_call_index_by_canonical: BTreeMap<usize, usize>,
 }
 
 #[derive(Clone, Default)]
@@ -1299,6 +1318,7 @@ struct OpenAIResponsesClientToolState {
     name: String,
     arguments: String,
     output_index: Option<usize>,
+    web_search: bool,
 }
 
 #[derive(Clone, Default)]
@@ -1308,6 +1328,23 @@ struct OpenAIResponsesClientToolResultState {
     content: String,
     output_index: Option<usize>,
     item_started: bool,
+}
+
+fn is_responses_web_search_tool(name: &str) -> bool {
+    matches!(name, "web_search" | "web_search_preview")
+}
+
+fn web_search_query_from_arguments(arguments: &str) -> String {
+    serde_json::from_str::<Value>(arguments)
+        .ok()
+        .and_then(|value| {
+            value
+                .get("query")
+                .and_then(Value::as_str)
+                .map(ToOwned::to_owned)
+                .or_else(|| value.as_str().map(ToOwned::to_owned))
+        })
+        .unwrap_or_default()
 }
 
 #[derive(Default)]
@@ -1355,6 +1392,17 @@ impl OpenAIChatClientEmitter {
                 self.model.as_deref().unwrap_or("unknown"),
             ),
         )
+    }
+
+    fn chat_tool_call_index(&mut self, canonical_index: usize) -> usize {
+        if let Some(index) = self.tool_call_index_by_canonical.get(&canonical_index) {
+            return *index;
+        }
+        let index = self.next_tool_call_index;
+        self.next_tool_call_index += 1;
+        self.tool_call_index_by_canonical
+            .insert(canonical_index, index);
+        index
     }
 
     pub fn emit(&mut self, frame: CanonicalStreamFrame) -> Result<Vec<u8>, AiSurfaceFinalizeError> {
@@ -1465,6 +1513,7 @@ impl OpenAIChatClientEmitter {
                 name,
             } => {
                 let mut out = self.ensure_started()?;
+                let chat_index = self.chat_tool_call_index(index);
                 out.extend(encode_json_sse(
                     None,
                     &build_openai_chat_chunk(
@@ -1474,7 +1523,7 @@ impl OpenAIChatClientEmitter {
                         self.model.as_deref().unwrap_or("unknown"),
                         String::new(),
                         Some(vec![json!({
-                            "index": index,
+                            "index": chat_index,
                             "id": call_id,
                             "type": "function",
                             "function": {
@@ -1489,6 +1538,7 @@ impl OpenAIChatClientEmitter {
             }
             CanonicalStreamEvent::ToolCallArgumentsDelta { index, arguments } => {
                 let mut out = self.ensure_started()?;
+                let chat_index = self.chat_tool_call_index(index);
                 out.extend(encode_json_sse(
                     None,
                     &json!({
@@ -1501,7 +1551,7 @@ impl OpenAIChatClientEmitter {
                             "index": 0,
                             "delta": {
                                 "tool_calls": [{
-                                    "index": index,
+                                    "index": chat_index,
                                     "function": {
                                         "arguments": arguments,
                                     }
@@ -1543,6 +1593,13 @@ impl OpenAIChatClientEmitter {
                     }),
                 )?);
                 Ok(out)
+            }
+            CanonicalStreamEvent::UnknownEvent(payload)
+                if openai_stream_terminal_error_body(&payload).is_some() =>
+            {
+                self.finished = true;
+                let error_body = openai_stream_terminal_error_body(&payload).unwrap_or(payload);
+                encode_json_sse(None, &error_body)
             }
             CanonicalStreamEvent::UnknownEvent(_) => Ok(Vec::new()),
             CanonicalStreamEvent::Finish {
@@ -1985,6 +2042,26 @@ impl OpenAIResponsesClientEmitter {
             } else {
                 state.name.clone()
             };
+            if state.web_search {
+                out.extend(self.encode_response_event(
+                    "response.output_item.done",
+                    json!({
+                        "type": "response.output_item.done",
+                        "response_id": self.response_id(),
+                        "output_index": output_index,
+                        "item": {
+                            "type": "web_search_call",
+                            "id": item_id,
+                            "status": "completed",
+                            "action": {
+                                "type": "search",
+                                "query": web_search_query_from_arguments(&state.arguments),
+                            },
+                        }
+                    }),
+                )?);
+                continue;
+            }
             out.extend(self.encode_response_event(
                 "response.function_call_arguments.done",
                 json!({
@@ -2143,20 +2220,32 @@ impl OpenAIResponsesClientEmitter {
         }
         for (index, state) in &self.tool_calls {
             if let Some(output_index) = state.output_index {
+                let item_id = if state.call_id.is_empty() {
+                    build_generated_tool_call_id(*index)
+                } else {
+                    state.call_id.clone()
+                };
+                if state.web_search {
+                    ordered_output.push((
+                        output_index,
+                        json!({
+                            "type": "web_search_call",
+                            "id": item_id,
+                            "status": "completed",
+                            "action": {
+                                "type": "search",
+                                "query": web_search_query_from_arguments(&state.arguments),
+                            },
+                        }),
+                    ));
+                    continue;
+                }
                 ordered_output.push((
                     output_index,
                     json!({
                         "type": "function_call",
-                        "id": if state.call_id.is_empty() {
-                            build_generated_tool_call_id(*index)
-                        } else {
-                            state.call_id.clone()
-                        },
-                        "call_id": if state.call_id.is_empty() {
-                            build_generated_tool_call_id(*index)
-                        } else {
-                            state.call_id.clone()
-                        },
+                        "id": item_id.clone(),
+                        "call_id": item_id,
                         "name": if state.name.is_empty() {
                             "unknown".to_string()
                         } else {
@@ -2322,22 +2411,36 @@ impl OpenAIResponsesClientEmitter {
                 let state = self.tool_calls.entry(index).or_default();
                 state.call_id = call_id.clone();
                 state.name = name.clone();
+                state.web_search = is_responses_web_search_tool(&name);
                 let emitted_call_id = state.call_id.clone();
                 let emitted_name = state.name.clone();
+                let item = if state.web_search {
+                    json!({
+                        "type": "web_search_call",
+                        "id": emitted_call_id,
+                        "status": "in_progress",
+                        "action": {
+                            "type": "search",
+                            "query": "",
+                        },
+                    })
+                } else {
+                    json!({
+                        "type": "function_call",
+                        "id": call_id,
+                        "call_id": emitted_call_id,
+                        "name": emitted_name,
+                        "arguments": "",
+                        "status": "in_progress",
+                    })
+                };
                 out.extend(self.encode_response_event(
                     "response.output_item.added",
                     json!({
                         "type": "response.output_item.added",
                         "response_id": response_id,
                         "output_index": output_index,
-                        "item": {
-                            "type": "function_call",
-                            "id": call_id,
-                            "call_id": emitted_call_id,
-                            "name": emitted_name,
-                            "arguments": "",
-                            "status": "in_progress",
-                        }
+                        "item": item
                     }),
                 )?);
                 Ok(out)
@@ -2348,6 +2451,9 @@ impl OpenAIResponsesClientEmitter {
                 let response_id = self.response_id().to_string();
                 let state = self.tool_calls.entry(index).or_default();
                 state.arguments.push_str(&arguments);
+                if state.web_search {
+                    return Ok(out);
+                }
                 let item_id = if state.call_id.is_empty() {
                     build_generated_tool_call_id(index)
                 } else {
@@ -2440,6 +2546,29 @@ impl OpenAIResponsesClientEmitter {
                     )?);
                 }
                 Ok(out)
+            }
+            CanonicalStreamEvent::UnknownEvent(payload)
+                if openai_stream_terminal_error_body(&payload).is_some() =>
+            {
+                self.finished = true;
+                let raw_event = payload.get("type").and_then(Value::as_str);
+                let event = raw_event
+                    .filter(|event| {
+                        matches!(*event, "response.failed" | "response.incomplete" | "error")
+                    })
+                    .unwrap_or("response.failed")
+                    .to_string();
+                let mut payload = if raw_event == Some(event.as_str()) {
+                    payload
+                } else {
+                    openai_stream_terminal_error_body(&payload).unwrap_or(payload)
+                };
+                if payload.get("type").is_none() {
+                    if let Some(object) = payload.as_object_mut() {
+                        object.insert("type".to_string(), Value::String(event.clone()));
+                    }
+                }
+                self.encode_response_event(event.as_str(), payload)
             }
             CanonicalStreamEvent::UnknownEvent(_) => Ok(Vec::new()),
             CanonicalStreamEvent::Finish { usage, .. } => {
@@ -2588,6 +2717,27 @@ mod tests {
         parts
     }
 
+    fn openai_chat_tool_call_indices(sse: &str) -> Vec<u64> {
+        let mut indices = Vec::new();
+        for payload in sse.lines().filter_map(|line| line.strip_prefix("data: ")) {
+            let Ok(value) = serde_json::from_str::<Value>(payload) else {
+                continue;
+            };
+            let Some(tool_calls) = value
+                .pointer("/choices/0/delta/tool_calls")
+                .and_then(Value::as_array)
+            else {
+                continue;
+            };
+            for tool_call in tool_calls {
+                if let Some(index) = tool_call.get("index").and_then(Value::as_u64) {
+                    indices.push(index);
+                }
+            }
+        }
+        indices
+    }
+
     #[test]
     fn openai_chat_provider_state_emits_unknown_events_for_unrecognized_deltas() {
         let mut state = OpenAIChatProviderState::default();
@@ -2644,6 +2794,40 @@ mod tests {
             CanonicalStreamEvent::UnknownEvent(ref payload)
                 if payload.get("type").and_then(Value::as_str) == Some("response.future.delta")
         )));
+    }
+
+    #[test]
+    fn openai_responses_provider_state_treats_failed_event_as_terminal() {
+        let mut state = OpenAIResponsesProviderState::default();
+        let report_context = json!({});
+        let frames = state
+            .push_line(
+                &report_context,
+                data_line(json!({
+                    "type": "response.failed",
+                    "response": {
+                        "id": "resp_failed_123",
+                        "model": "gpt-5.4",
+                        "status": "failed",
+                        "error": {
+                            "message": "policy failure",
+                            "type": "invalid_request_error",
+                            "code": "cyber_policy"
+                        }
+                    }
+                })),
+            )
+            .expect("failed response event should parse");
+
+        assert!(frames.iter().any(|frame| matches!(
+            frame.event,
+            CanonicalStreamEvent::UnknownEvent(ref payload)
+                if payload.get("type").and_then(Value::as_str) == Some("response.failed")
+        )));
+        assert!(state
+            .finish(&report_context)
+            .expect("terminal failure should not synthesize completion")
+            .is_empty());
     }
 
     #[test]
@@ -2810,6 +2994,41 @@ mod tests {
         assert!(sse.contains("\"item_id\":\"resp_stream_123_msg\""));
         assert!(sse.contains("\"text\":\"Hello\""));
         assert_eq!(response_sequence_numbers(&sse), (1..=9).collect::<Vec<_>>());
+    }
+
+    #[test]
+    fn openai_responses_client_emitter_forwards_failed_unknown_event() {
+        let mut emitter = OpenAIResponsesClientEmitter::default();
+        let bytes = emitter
+            .emit(CanonicalStreamFrame {
+                id: "resp_failed_123".to_string(),
+                model: "gpt-5.4".to_string(),
+                event: CanonicalStreamEvent::UnknownEvent(json!({
+                    "type": "response.failed",
+                    "response": {
+                        "id": "resp_failed_123",
+                        "model": "gpt-5.4",
+                        "status": "failed",
+                        "error": {
+                            "message": "policy failure",
+                            "type": "invalid_request_error",
+                            "code": "cyber_policy"
+                        }
+                    }
+                })),
+            })
+            .expect("failed response event should encode");
+        let mut all = bytes;
+        all.extend(
+            emitter
+                .finish()
+                .expect("failed stream should not synthesize completion"),
+        );
+
+        let sse = String::from_utf8(all).expect("sse should be utf8");
+        assert!(sse.contains("event: response.failed\n"));
+        assert!(sse.contains("\"message\":\"policy failure\""));
+        assert!(!sse.contains("event: response.completed\n"));
     }
 
     #[test]
@@ -3168,6 +3387,56 @@ mod tests {
     }
 
     #[test]
+    fn openai_responses_client_emitter_emits_web_search_call_item() {
+        let mut emitter = OpenAIResponsesClientEmitter::default();
+        let mut bytes = emitter
+            .emit(CanonicalStreamFrame {
+                id: "resp_123".to_string(),
+                model: "gpt-5-5-low".to_string(),
+                event: CanonicalStreamEvent::ToolCallStart {
+                    index: 0,
+                    call_id: "call_ws_1".to_string(),
+                    name: "web_search".to_string(),
+                },
+            })
+            .expect("tool start should encode");
+        bytes.extend(
+            emitter
+                .emit(CanonicalStreamFrame {
+                    id: "resp_123".to_string(),
+                    model: "gpt-5-5-low".to_string(),
+                    event: CanonicalStreamEvent::ToolCallArgumentsDelta {
+                        index: 0,
+                        arguments: r#"{"query":"today tech"}"#.to_string(),
+                    },
+                })
+                .expect("arguments should encode"),
+        );
+        bytes.extend(
+            emitter
+                .emit(CanonicalStreamFrame {
+                    id: "resp_123".to_string(),
+                    model: "gpt-5-5-low".to_string(),
+                    event: CanonicalStreamEvent::Finish {
+                        finish_reason: Some("tool_calls".to_string()),
+                        usage: None,
+                    },
+                })
+                .expect("finish should encode"),
+        );
+
+        let sse = String::from_utf8(bytes).expect("sse should be utf8");
+        assert!(sse.contains("event: response.output_item.added\n"));
+        assert!(sse.contains(r#""type":"web_search_call""#));
+        assert!(sse.contains(r#""status":"in_progress""#));
+        assert!(sse.contains(r#""query":"""#));
+        assert!(sse.contains(r#""type":"search""#));
+        assert!(sse.contains("event: response.output_item.done\n"));
+        assert!(sse.contains(r#""query":"today tech""#));
+        assert!(!sse.contains("response.function_call_arguments.delta"));
+    }
+
+    #[test]
     fn openai_responses_provider_state_accepts_legacy_outtext_delta_alias() {
         let mut state = OpenAIResponsesProviderState::default();
         let report_context = json!({});
@@ -3248,6 +3517,50 @@ mod tests {
 
         let sse = String::from_utf8(bytes).expect("sse should be utf8");
         assert!(sse.contains("[Image]"));
+    }
+
+    #[test]
+    fn openai_chat_client_emitter_normalizes_sparse_tool_call_indices() {
+        let mut emitter = OpenAIChatClientEmitter::default();
+        let mut bytes = Vec::new();
+
+        for event in [
+            CanonicalStreamEvent::ToolCallStart {
+                index: 1,
+                call_id: "call_first".to_string(),
+                name: "first_tool".to_string(),
+            },
+            CanonicalStreamEvent::ToolCallArgumentsDelta {
+                index: 1,
+                arguments: "{\"first\":".to_string(),
+            },
+            CanonicalStreamEvent::ToolCallStart {
+                index: 3,
+                call_id: "call_second".to_string(),
+                name: "second_tool".to_string(),
+            },
+            CanonicalStreamEvent::ToolCallArgumentsDelta {
+                index: 3,
+                arguments: "{\"second\":true}".to_string(),
+            },
+            CanonicalStreamEvent::ToolCallArgumentsDelta {
+                index: 1,
+                arguments: "true}".to_string(),
+            },
+        ] {
+            bytes.extend(
+                emitter
+                    .emit(CanonicalStreamFrame {
+                        id: "chatcmpl_sparse".to_string(),
+                        model: "claude-opus-4-6".to_string(),
+                        event,
+                    })
+                    .expect("tool event should encode"),
+            );
+        }
+
+        let sse = String::from_utf8(bytes).expect("sse should be utf8");
+        assert_eq!(openai_chat_tool_call_indices(&sse), vec![0, 0, 1, 1, 0]);
     }
 
     #[test]

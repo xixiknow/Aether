@@ -393,8 +393,21 @@ pub(crate) fn spawn_pool_score_rebuild_worker(
         }
         let mut interval = tokio::time::interval(config.interval);
         interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+        let mut deferred_since = None;
         loop {
             interval.tick().await;
+            if state
+                .data
+                .should_defer_maintenance_for_database_pool_pressure(&mut deferred_since)
+            {
+                debug!(
+                    event_name = "maintenance_worker_deferred",
+                    log_type = "ops",
+                    worker = "pool_score_rebuild",
+                    "gateway pool score rebuild deferred because database pool has no idle reserve"
+                );
+                continue;
+            }
             match perform_pool_score_rebuild_once_with_config(&state, config).await {
                 Ok(summary) if summary.scores_upserted > 0 => {
                     info!(

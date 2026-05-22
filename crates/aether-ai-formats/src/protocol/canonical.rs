@@ -1556,6 +1556,39 @@ pub(crate) fn openai_responses_input_to_canonical_messages(
                             extensions: BTreeMap::new(),
                         });
                     }
+                    "web_search_call" => {
+                        let id = item_object
+                            .get("id")
+                            .and_then(Value::as_str)
+                            .map(str::trim)
+                            .filter(|value| !value.is_empty())
+                            .map(ToOwned::to_owned)
+                            .unwrap_or_else(|| {
+                                let generated =
+                                    format!("call_auto_{next_generated_tool_call_index}");
+                                next_generated_tool_call_index += 1;
+                                generated
+                            });
+                        let query = item_object
+                            .get("action")
+                            .and_then(Value::as_object)
+                            .and_then(|action| action.get("query"))
+                            .and_then(Value::as_str)
+                            .unwrap_or_default();
+                        messages.push(CanonicalMessage {
+                            role: CanonicalRole::Assistant,
+                            content: vec![CanonicalContentBlock::ToolUse {
+                                id,
+                                name: "web_search".to_string(),
+                                input: json!({ "query": query }),
+                                extensions: openai_responses_extensions(
+                                    item_object,
+                                    &["type", "id", "status", "action"],
+                                ),
+                            }],
+                            extensions: BTreeMap::new(),
+                        });
+                    }
                     "function_call_output" => {
                         let id = item_object
                             .get("call_id")
@@ -1726,6 +1759,30 @@ pub(crate) fn openai_responses_output_to_canonical_blocks(
                     extensions: openai_responses_extensions(
                         item_object,
                         &["type", "id", "call_id", "name", "arguments", "status"],
+                    ),
+                });
+            }
+            "web_search_call" => {
+                let id = item_object
+                    .get("id")
+                    .and_then(Value::as_str)
+                    .map(str::trim)
+                    .filter(|value| !value.is_empty())
+                    .map(ToOwned::to_owned)
+                    .unwrap_or_else(|| format!("call_auto_{index}"));
+                let query = item_object
+                    .get("action")
+                    .and_then(Value::as_object)
+                    .and_then(|action| action.get("query"))
+                    .and_then(Value::as_str)
+                    .unwrap_or_default();
+                blocks.push(CanonicalContentBlock::ToolUse {
+                    id,
+                    name: "web_search".to_string(),
+                    input: json!({ "query": query }),
+                    extensions: openai_responses_extensions(
+                        item_object,
+                        &["type", "id", "status", "action"],
                     ),
                 });
             }
@@ -3763,9 +3820,11 @@ pub(crate) fn canonical_block_to_claude(
             );
             out.insert(
                 "content".to_string(),
-                output
-                    .clone()
-                    .unwrap_or_else(|| Value::String(content_text.clone().unwrap_or_default())),
+                canonical_tool_result_content_to_claude(
+                    output.as_ref(),
+                    content_text.as_deref(),
+                    role,
+                ),
             );
             out.insert("is_error".to_string(), Value::Bool(*is_error));
             out.extend(namespace_extension_object(extensions, "claude", &out));
@@ -3773,6 +3832,41 @@ pub(crate) fn canonical_block_to_claude(
         }
         CanonicalContentBlock::Unknown { .. } => Some(None),
     }
+}
+
+fn canonical_tool_result_content_to_claude(
+    output: Option<&Value>,
+    content_text: Option<&str>,
+    role: &CanonicalRole,
+) -> Value {
+    if matches!(role, CanonicalRole::Assistant) {
+        return output
+            .cloned()
+            .unwrap_or_else(|| Value::String(content_text.unwrap_or_default().to_string()));
+    }
+
+    match output {
+        Some(Value::String(text)) => Value::String(text.clone()),
+        Some(Value::Array(parts)) if claude_tool_result_content_blocks_are_wire_safe(parts) => {
+            Value::Array(parts.clone())
+        }
+        Some(value) => serde_json::to_string(value)
+            .map(Value::String)
+            .unwrap_or_else(|_| Value::String(content_text.unwrap_or_default().to_string())),
+        None => Value::String(content_text.unwrap_or_default().to_string()),
+    }
+}
+
+fn claude_tool_result_content_blocks_are_wire_safe(parts: &[Value]) -> bool {
+    !parts.is_empty()
+        && parts.iter().all(|part| {
+            part.as_object()
+                .and_then(|object| object.get("type"))
+                .and_then(Value::as_str)
+                .is_some_and(|block_type| {
+                    matches!(block_type, "text" | "image" | "document" | "file")
+                })
+        })
 }
 
 pub(crate) fn claude_source_value(

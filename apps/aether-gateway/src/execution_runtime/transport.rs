@@ -25,8 +25,10 @@ use serde_json::json;
 use serde_json::Value;
 use thiserror::Error;
 
+use crate::ai_serving::api::extract_provider_private_stream_error_body;
 #[cfg(test)]
 use crate::execution_runtime::remote_compat::execute_sync_plan_via_remote_execution_runtime;
+use crate::execution_runtime::windsurf::maybe_execute_windsurf_sync;
 use crate::frontdoor_loop_guard::{
     configured_gateway_frontdoor_base_url, gateway_frontdoor_self_loop_guard_error,
 };
@@ -232,26 +234,8 @@ impl DirectSyncExecutionRuntime {
         let elapsed_ms = started_at.elapsed().as_millis() as u64;
         let upstream_bytes = body_bytes.len() as u64;
 
-        let body = if body_bytes.is_empty() {
-            None
-        } else if plan.stream {
-            Some(ResponseBody {
-                json_body: None,
-                body_bytes_b64: Some(base64::engine::general_purpose::STANDARD.encode(&body_bytes)),
-            })
-        } else if response_body_is_json(&headers, &decoded_body_bytes) {
-            let body_json: Value = serde_json::from_slice(&decoded_body_bytes)
-                .map_err(ExecutionRuntimeTransportError::InvalidJson)?;
-            Some(ResponseBody {
-                json_body: Some(body_json),
-                body_bytes_b64: None,
-            })
-        } else {
-            Some(ResponseBody {
-                json_body: None,
-                body_bytes_b64: Some(base64::engine::general_purpose::STANDARD.encode(&body_bytes)),
-            })
-        };
+        let body =
+            build_execution_response_body(&headers, &body_bytes, &decoded_body_bytes, plan.stream)?;
 
         Ok(ExecutionResult {
             request_id: plan.request_id.clone(),
@@ -347,6 +331,11 @@ pub(crate) async fn execute_sync_plan_with_report_context(
     }
 
     let _ = trace_id;
+    match maybe_execute_windsurf_sync(state, plan, None).await {
+        Ok(Some(result)) => return Ok(result),
+        Ok(None) => {}
+        Err(err) => return Err(GatewayError::Internal(err.to_string())),
+    }
     match DirectSyncExecutionRuntime::new().execute_sync(plan).await {
         Ok(result) => {
             record_manual_proxy_request_outcome(state, plan, result.status_code).await;
@@ -567,26 +556,8 @@ async fn execute_sync_plan_via_local_tunnel(
         );
     }
 
-    let body = if body_bytes.is_empty() {
-        None
-    } else if plan.stream {
-        Some(ResponseBody {
-            json_body: None,
-            body_bytes_b64: Some(base64::engine::general_purpose::STANDARD.encode(&body_bytes)),
-        })
-    } else if response_body_is_json(&headers, &decoded_body_bytes) {
-        let body_json: Value = serde_json::from_slice(&decoded_body_bytes)
-            .map_err(ExecutionRuntimeTransportError::InvalidJson)?;
-        Some(ResponseBody {
-            json_body: Some(body_json),
-            body_bytes_b64: None,
-        })
-    } else {
-        Some(ResponseBody {
-            json_body: None,
-            body_bytes_b64: Some(base64::engine::general_purpose::STANDARD.encode(&body_bytes)),
-        })
-    };
+    let body =
+        build_execution_response_body(&headers, &body_bytes, &decoded_body_bytes, plan.stream)?;
 
     Ok(ExecutionResult {
         request_id: plan.request_id.clone(),
@@ -1470,15 +1441,61 @@ pub(crate) fn decode_response_body_bytes(
 }
 
 pub(crate) fn response_body_is_json(headers: &BTreeMap<String, String>, body_bytes: &[u8]) -> bool {
-    if headers
+    let content_type = headers
         .get("content-type")
         .map(|value| value.to_ascii_lowercase())
-        .is_some_and(|value| value.contains("json"))
+        .unwrap_or_default();
+    if content_type.contains("application/connect+json")
+        || content_type.contains("application/connect+proto")
     {
+        return false;
+    }
+    if content_type.contains("json") {
         return true;
     }
 
     serde_json::from_slice::<Value>(body_bytes).is_ok()
+}
+
+pub(crate) fn build_execution_response_body(
+    headers: &BTreeMap<String, String>,
+    body_bytes: &[u8],
+    decoded_body_bytes: &[u8],
+    stream: bool,
+) -> Result<Option<ResponseBody>, ExecutionRuntimeTransportError> {
+    if body_bytes.is_empty() {
+        return Ok(None);
+    }
+
+    if let Some(body_json) = extract_provider_private_stream_error_body(None, decoded_body_bytes)
+        .or_else(|| extract_provider_private_stream_error_body(None, body_bytes))
+    {
+        return Ok(Some(ResponseBody {
+            json_body: Some(body_json),
+            body_bytes_b64: None,
+        }));
+    }
+
+    if stream {
+        return Ok(Some(ResponseBody {
+            json_body: None,
+            body_bytes_b64: Some(base64::engine::general_purpose::STANDARD.encode(body_bytes)),
+        }));
+    }
+
+    if response_body_is_json(headers, decoded_body_bytes) {
+        let body_json: Value = serde_json::from_slice(decoded_body_bytes)
+            .map_err(ExecutionRuntimeTransportError::InvalidJson)?;
+        return Ok(Some(ResponseBody {
+            json_body: Some(body_json),
+            body_bytes_b64: None,
+        }));
+    }
+
+    Ok(Some(ResponseBody {
+        json_body: None,
+        body_bytes_b64: Some(base64::engine::general_purpose::STANDARD.encode(body_bytes)),
+    }))
 }
 
 #[cfg(test)]
@@ -1505,11 +1522,12 @@ mod tests {
     use tokio::sync::watch;
 
     use super::{
-        build_browser_wreq_client, build_client, build_request_headers, execute_sync_plan,
-        record_manual_proxy_request_failure, record_manual_proxy_request_outcome,
-        record_manual_proxy_request_success, record_manual_proxy_stream_error,
-        resolve_execution_transport_controls, DirectSyncExecutionRuntime,
-        ExecutionRuntimeTransportError, ExecutionTransportControls,
+        build_browser_wreq_client, build_client, build_execution_response_body,
+        build_request_headers, execute_sync_plan, record_manual_proxy_request_failure,
+        record_manual_proxy_request_outcome, record_manual_proxy_request_success,
+        record_manual_proxy_stream_error, resolve_execution_transport_controls,
+        response_body_is_json, DirectSyncExecutionRuntime, ExecutionRuntimeTransportError,
+        ExecutionTransportControls,
     };
     use crate::constants::{
         EXECUTION_RUNTIME_LOOP_GUARD_HEADER, EXECUTION_RUNTIME_LOOP_GUARD_VIA_TOKEN,
@@ -2762,6 +2780,41 @@ mod tests {
             ExecutionRuntimeTransportError::UnsupportedTransportProfile(backend)
                 if backend == "utls"
         ));
+    }
+
+    #[test]
+    fn connect_json_response_is_not_treated_as_plain_json() {
+        let headers = BTreeMap::from([(
+            "content-type".to_string(),
+            "application/connect+json".to_string(),
+        )]);
+        let body = [2, 0, 0, 0, 2, b'{', b'}'];
+
+        assert!(!response_body_is_json(&headers, &body));
+    }
+
+    #[test]
+    fn connect_json_error_response_is_decoded_for_stream_sync_body() {
+        let headers = BTreeMap::from([(
+            "content-type".to_string(),
+            "application/connect+json".to_string(),
+        )]);
+        let payload = br#"{"error":{"code":"resource_exhausted","message":"quota exhausted"}}"#;
+        let mut body_bytes = vec![2];
+        body_bytes.extend_from_slice(&(payload.len() as u32).to_be_bytes());
+        body_bytes.extend_from_slice(payload);
+
+        let body = build_execution_response_body(&headers, &body_bytes, &body_bytes, true)
+            .expect("body should build")
+            .expect("body should be present");
+
+        assert_eq!(
+            body.json_body
+                .as_ref()
+                .and_then(|value| value.pointer("/error/code")),
+            Some(&json!("resource_exhausted"))
+        );
+        assert!(body.body_bytes_b64.is_none());
     }
 
     #[tokio::test]

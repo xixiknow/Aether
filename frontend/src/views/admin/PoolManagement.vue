@@ -2089,6 +2089,7 @@ const showAccountQuotaColumn = computed(() => {
   return selectedProviderType.value === 'codex'
     || selectedProviderType.value === 'gemini_cli'
     || selectedProviderType.value === 'kiro'
+    || selectedProviderType.value === 'windsurf'
     || selectedProviderType.value === 'antigravity'
     || selectedProviderType.value === 'grok'
     || selectedProviderType.value === 'chatgpt_web'
@@ -2495,6 +2496,7 @@ const quotaRefreshSupported = computed(() => {
   return selectedProviderType.value === 'codex'
     || selectedProviderType.value === 'kiro'
     || selectedProviderType.value === 'gemini_cli'
+    || selectedProviderType.value === 'windsurf'
     || selectedProviderType.value === 'antigravity'
     || selectedProviderType.value === 'grok'
     || selectedProviderType.value === 'chatgpt_web'
@@ -3642,11 +3644,15 @@ function getQuotaAlertSnapshotState(key: PoolKeyDetail): { label: string, title:
   if (!quota) return null
 
   const code = String(quota.code || '').trim().toLowerCase()
-  if (code !== 'banned' && code !== 'forbidden') return null
+  if (!['banned', 'forbidden', 'quarantined', 'rate_limited', 'exhausted'].includes(code)) return null
 
   let label = String(quota.label || '').trim()
   if (!label) {
-    label = code === 'banned' ? '账号封禁' : '访问受限'
+    if (code === 'banned') label = '账号封禁'
+    else if (code === 'forbidden') label = '访问受限'
+    else if (code === 'quarantined') label = '账号隔离'
+    else if (code === 'rate_limited') label = '速率受限'
+    else label = '额度耗尽'
   } else if (label === '账号已封禁' || label === '封禁') {
     label = '账号封禁'
   }
@@ -3703,6 +3709,7 @@ function normalizeQuotaLabel(label: string): string {
 }
 
 function getQuotaProgressLabel(label: string): string {
+  if (label === '日') return '日'
   if (label === '5H') return '5H'
   if (label === '周') return '周'
   if (label === 'Spark5H') return 'Spark5H'
@@ -3772,14 +3779,19 @@ function getQuotaLabelOrder(label: string): number {
   if (label === 'Expert') return 2
   if (label === 'Heavy') return 3
   if (label === 'Grok 4.3') return 4
-  if (label === '5H') return 0
-  if (label === '周') return 1
-  if (label === 'Spark5H') return 2
-  if (label === 'Spark周') return 3
-  if (label === '剩余') return 4
-  if (label === '最低') return 5
-  if (label === '生图') return 6
-  return 10
+  if (label === '日') return 5
+  if (label === '5H') return 6
+  if (label === '周') return 7
+  if (label === 'Spark5H') return 8
+  if (label === 'Spark周') return 9
+  if (label === 'Prompt') return 10
+  if (label === 'Flex') return 11
+  if (label === '剩余') return 12
+  if (label === '最低') return 13
+  if (label === '生图') return 14
+  if (label === '速率') return 15
+  if (label === '模型') return 16
+  return 20
 }
 
 function clampPercent(value: number): number {
@@ -4027,6 +4039,57 @@ function buildQuotaProgressItemsFromSnapshot(key: PoolKeyDetail): QuotaProgressI
       resetSeconds: normalizeRemainingSeconds(window?.reset_seconds ?? quotaResetSeconds ?? null),
       updatedAtSeconds: getQuotaSnapshotUpdatedAtSeconds(quota),
     }]
+  }
+
+  if (providerType === 'windsurf') {
+    const items: QuotaProgressItem[] = []
+    for (const [label, code] of [
+      ['日', 'daily'],
+      ['周', 'weekly'],
+      ['Prompt', 'prompt'],
+      ['Flex', 'flex'],
+    ] as const) {
+      const window = getQuotaSnapshotWindow(quota, code)
+      const remainingPercent = getQuotaWindowRemainingPercent(window)
+      if (remainingPercent == null) continue
+      const detail = typeof window?.used_value === 'number' && typeof window?.limit_value === 'number'
+        ? `${formatQuotaValue(window.used_value)}/${formatQuotaValue(window.limit_value)}`
+        : typeof window?.remaining_value === 'number' && typeof window?.limit_value === 'number'
+          ? `剩余 ${formatQuotaValue(window.remaining_value)}/${formatQuotaValue(window.limit_value)}`
+          : undefined
+      items.push({
+        label,
+        remainingPercent,
+        detail,
+        resetAtSeconds: normalizeUnixSeconds(window?.reset_at ?? null),
+        resetSeconds: normalizeRemainingSeconds(window?.reset_seconds ?? null),
+        updatedAtSeconds: getQuotaSnapshotUpdatedAtSeconds(quota),
+      })
+    }
+
+    const rateLimitWindow = getQuotaSnapshotWindow(quota, 'rate_limit')
+    if (rateLimitWindow) {
+      items.push({
+        label: '速率',
+        remainingPercent: rateLimitWindow.is_exhausted ? 0 : 100,
+        resetAtSeconds: normalizeUnixSeconds(rateLimitWindow.reset_at ?? null),
+        resetSeconds: normalizeRemainingSeconds(rateLimitWindow.reset_seconds ?? null),
+        updatedAtSeconds: getQuotaSnapshotUpdatedAtSeconds(quota),
+      })
+    }
+
+    if (typeof quota.allowed_models_count === 'number' && Number.isFinite(quota.allowed_models_count)) {
+      items.push({
+        label: '模型',
+        remainingPercent: 100,
+        detail: `${quota.allowed_models_count} 个`,
+        resetAtSeconds: null,
+        resetSeconds: null,
+        updatedAtSeconds: getQuotaSnapshotUpdatedAtSeconds(quota),
+      })
+    }
+
+    return items
   }
 
   if (providerType === 'antigravity') {
