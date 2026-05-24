@@ -4993,17 +4993,10 @@ mod tests {
         .expect("execution should return a client response");
 
         let mut body_stream = response.into_body().into_data_stream();
-        let keepalive = tokio::time::timeout(Duration::from_millis(50), body_stream.next())
-            .await
-            .expect("initial keepalive should be emitted")
-            .expect("body should yield initial keepalive")
-            .expect("initial keepalive should be ok");
-        assert_eq!(keepalive.as_ref(), b": aether-keepalive\n\n");
-
         let next_chunk = tokio::time::timeout(Duration::from_millis(100), body_stream.next()).await;
         assert!(
             next_chunk.is_err(),
-            "stream total_ms must not synthesize an image failure or close the response body"
+            "stream total_ms must not synthesize a keepalive, image failure, or close the response body"
         );
     }
 
