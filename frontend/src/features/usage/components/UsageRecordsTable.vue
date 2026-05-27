@@ -225,7 +225,7 @@
               <Badge
                 v-if="getFastBadge(record)"
                 variant="outline"
-                class="h-4 rounded-full border-slate-200 bg-white px-1.5 text-[10px] leading-4 text-slate-900 shadow-sm dark:border-white/50 dark:bg-white dark:text-slate-950 flex-shrink-0"
+                class="h-4 rounded-full px-1.5 text-[10px] leading-4 flex-shrink-0"
                 :title="getFastBadgeTitle(record)"
               >
                 fast
@@ -601,22 +601,6 @@
             >
               <div class="flex min-w-0 items-center gap-1">
                 <span class="truncate">{{ record.model }}</span>
-                <Badge
-                  v-if="getReasoningEffort(record)"
-                  variant="outline"
-                  class="h-4 rounded-full border-primary/30 bg-primary/5 px-1.5 text-[10px] leading-4 text-primary flex-shrink-0"
-                  :title="getReasoningEffortTitle(record)"
-                >
-                  {{ getReasoningEffort(record) }}
-                </Badge>
-                <Badge
-                  v-if="getFastBadge(record)"
-                  variant="outline"
-                  class="h-4 rounded-full border-slate-200 bg-white px-1.5 text-[10px] leading-4 text-slate-900 shadow-sm dark:border-white/50 dark:bg-white dark:text-slate-950 flex-shrink-0"
-                  :title="getFastBadgeTitle(record)"
-                >
-                  fast
-                </Badge>
                 <svg
                   xmlns="http://www.w3.org/2000/svg"
                   viewBox="0 0 20 20"
@@ -629,6 +613,22 @@
                     clip-rule="evenodd"
                   />
                 </svg>
+                <Badge
+                  v-if="getReasoningEffort(record)"
+                  variant="outline"
+                  class="h-4 rounded-full border-primary/30 bg-primary/5 px-1.5 text-[10px] leading-4 text-primary flex-shrink-0"
+                  :title="getReasoningEffortTitle(record)"
+                >
+                  {{ getReasoningEffort(record) }}
+                </Badge>
+                <Badge
+                  v-if="getFastBadge(record)"
+                  variant="outline"
+                  class="h-4 rounded-full border-amber-500/30 bg-amber-500/5 px-1.5 text-[10px] leading-4 text-amber-600 dark:text-amber-400 flex-shrink-0"
+                  :title="getFastBadgeTitle(record)"
+                >
+                  fast
+                </Badge>
               </div>
               <span class="text-muted-foreground truncate">{{ getActualModel(record) }}</span>
             </div>
@@ -648,7 +648,7 @@
               <Badge
                 v-if="getFastBadge(record)"
                 variant="outline"
-                class="h-4 rounded-full border-slate-200 bg-white px-1.5 text-[10px] leading-4 text-slate-900 shadow-sm dark:border-white/50 dark:bg-white dark:text-slate-950 flex-shrink-0"
+                class="h-4 rounded-full px-1.5 text-[10px] leading-4 flex-shrink-0"
                 :title="getFastBadgeTitle(record)"
               >
                 fast
