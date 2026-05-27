@@ -1,8 +1,10 @@
+use std::collections::BTreeMap;
 use std::time::{Duration, Instant};
 
 use crate::execution_runtime::transport::format_upstream_request_error;
 use crate::handlers::admin::request::{AdminAppState, AdminRequestContext};
 use crate::handlers::admin::shared::query_param_value;
+use crate::handlers::shared::unix_secs_to_rfc3339;
 use crate::maintenance::{
     cancel_proxy_upgrade_rollout, clear_proxy_upgrade_rollout_conflicts,
     restore_proxy_upgrade_rollout_skipped_nodes, retry_proxy_upgrade_rollout_node,
@@ -20,7 +22,11 @@ use aether_contracts::tunnel::{
 use aether_data::repository::management_tokens::{
     CreateManagementTokenRecord, StoredManagementTokenUserSummary,
 };
-use aether_data::repository::proxy_nodes::{ProxyNodeEventQuery, ProxyNodeMetricsStep};
+use aether_data::repository::proxy_nodes::{
+    ProxyGroupCreateMutation, ProxyGroupMemberUpdateMutation, ProxyGroupMemberUpsertMutation,
+    ProxyGroupUpdateMutation, ProxyNodeEventQuery, ProxyNodeMetricsStep, StoredProxyGroup,
+    StoredProxyGroupMember, StoredProxyNode,
+};
 use axum::{
     body::{Body, Bytes},
     http,
@@ -150,6 +156,53 @@ struct ProxyNodeBatchUpgradeRequest {
     probe_timeout_secs: Option<u64>,
 }
 
+#[derive(Debug, Deserialize)]
+struct ProxyGroupCreateRequest {
+    name: String,
+    #[serde(default)]
+    description: Option<String>,
+    #[serde(default)]
+    enabled: Option<bool>,
+    #[serde(default)]
+    strategy: Option<String>,
+    #[serde(default)]
+    top_n: Option<i32>,
+}
+
+#[derive(Debug, Deserialize)]
+struct ProxyGroupUpdateRequest {
+    #[serde(default)]
+    name: Option<String>,
+    #[serde(default)]
+    description: Option<Option<String>>,
+    #[serde(default)]
+    enabled: Option<bool>,
+    #[serde(default)]
+    strategy: Option<String>,
+    #[serde(default)]
+    top_n: Option<i32>,
+}
+
+#[derive(Debug, Deserialize)]
+struct ProxyGroupMemberUpsertRequest {
+    #[serde(default)]
+    enabled: Option<bool>,
+    #[serde(default)]
+    manual_weight: Option<f64>,
+    #[serde(default)]
+    sort_index: Option<i32>,
+}
+
+#[derive(Debug, Deserialize)]
+struct ProxyGroupMemberUpdateRequest {
+    #[serde(default)]
+    enabled: Option<bool>,
+    #[serde(default)]
+    manual_weight: Option<f64>,
+    #[serde(default)]
+    sort_index: Option<i32>,
+}
+
 #[derive(Debug, Default)]
 struct ProxyNodeBatchUpgradeDispatchSummary {
     version: String,
@@ -171,6 +224,12 @@ const MAX_PROXY_CONNECTIVITY_RESPONSE_BYTES: usize = 64 * 1024;
 const PROXY_NODE_METRICS_MAX_POINTS: usize = 50_000;
 const PROXY_NODE_METRICS_1M_MAX_WINDOW_SECS: u64 = 30 * 24 * 60 * 60;
 const PROXY_NODE_METRICS_1H_MAX_WINDOW_SECS: u64 = 365 * 24 * 60 * 60;
+const PROXY_GROUP_STRATEGIES: &[&str] = &[
+    "balanced_weighted",
+    "stable_failover",
+    "success_rate",
+    "manual_priority",
+];
 
 #[cfg(test)]
 fn manual_proxy_connectivity_probe_url_override() -> &'static std::sync::RwLock<Option<String>> {
@@ -235,6 +294,210 @@ pub(crate) async fn maybe_build_local_admin_proxy_nodes_response(
 
     if decision.route_family.as_deref() != Some("proxy_nodes_manage") {
         return Ok(None);
+    }
+
+    if decision.route_kind.as_deref() == Some("list_proxy_groups")
+        && request_context.method() == http::Method::GET
+    {
+        if !state.has_proxy_node_reader() {
+            return Ok(Some(build_admin_proxy_nodes_data_unavailable_response()));
+        }
+        return Ok(Some(build_admin_proxy_groups_list_response(state).await?));
+    }
+
+    if decision.route_kind.as_deref() == Some("create_proxy_group")
+        && request_context.method() == http::Method::POST
+    {
+        if !state.has_proxy_node_writer() {
+            return Ok(Some(build_admin_proxy_nodes_data_unavailable_response()));
+        }
+        let input = match parse_json_body::<ProxyGroupCreateRequest>(request_body) {
+            Ok(input) => input,
+            Err(response) => return Ok(Some(response)),
+        };
+        let mutation = match validate_proxy_group_create_request(input) {
+            Ok(mutation) => mutation,
+            Err(response) => return Ok(Some(response)),
+        };
+        let Some(group) = state.create_proxy_group(&mutation).await? else {
+            return Ok(Some(build_admin_proxy_nodes_data_unavailable_response()));
+        };
+        return Ok(Some(
+            Json(json!({
+                "group_id": group.id,
+                "group": build_admin_proxy_group_payload(state, &group).await?,
+            }))
+            .into_response(),
+        ));
+    }
+
+    if decision.route_kind.as_deref() == Some("get_proxy_group")
+        && request_context.method() == http::Method::GET
+    {
+        if !state.has_proxy_node_reader() {
+            return Ok(Some(build_admin_proxy_nodes_data_unavailable_response()));
+        }
+        let Some(group_id) = admin_proxy_group_id_from_path(request_context.path()) else {
+            return Ok(Some(build_admin_proxy_nodes_not_found_response()));
+        };
+        let Some(group) = state.find_proxy_group(&group_id).await? else {
+            return Ok(Some(build_admin_proxy_nodes_not_found_response()));
+        };
+        return Ok(Some(
+            Json(json!({
+                "group": build_admin_proxy_group_payload(state, &group).await?,
+            }))
+            .into_response(),
+        ));
+    }
+
+    if decision.route_kind.as_deref() == Some("update_proxy_group")
+        && request_context.method() == http::Method::PATCH
+    {
+        if !state.has_proxy_node_writer() {
+            return Ok(Some(build_admin_proxy_nodes_data_unavailable_response()));
+        }
+        let Some(group_id) = admin_proxy_group_id_from_path(request_context.path()) else {
+            return Ok(Some(build_admin_proxy_nodes_not_found_response()));
+        };
+        let input = match parse_json_body::<ProxyGroupUpdateRequest>(request_body) {
+            Ok(input) => input,
+            Err(response) => return Ok(Some(response)),
+        };
+        let mutation = match validate_proxy_group_update_request(group_id, input) {
+            Ok(mutation) => mutation,
+            Err(response) => return Ok(Some(response)),
+        };
+        let Some(group) = state.update_proxy_group(&mutation).await? else {
+            return Ok(Some(build_admin_proxy_nodes_not_found_response()));
+        };
+        return Ok(Some(
+            Json(json!({
+                "group_id": group.id,
+                "group": build_admin_proxy_group_payload(state, &group).await?,
+            }))
+            .into_response(),
+        ));
+    }
+
+    if decision.route_kind.as_deref() == Some("delete_proxy_group")
+        && request_context.method() == http::Method::DELETE
+    {
+        if !state.has_proxy_node_writer() {
+            return Ok(Some(build_admin_proxy_nodes_data_unavailable_response()));
+        }
+        let Some(group_id) = admin_proxy_group_id_from_path(request_context.path()) else {
+            return Ok(Some(build_admin_proxy_nodes_not_found_response()));
+        };
+        let Some(group) = state.delete_proxy_group(&group_id).await? else {
+            return Ok(Some(build_admin_proxy_nodes_not_found_response()));
+        };
+        return Ok(Some(
+            Json(json!({
+                "message": "deleted",
+                "group_id": group.id,
+            }))
+            .into_response(),
+        ));
+    }
+
+    if decision.route_kind.as_deref() == Some("list_proxy_group_scores")
+        && request_context.method() == http::Method::GET
+    {
+        if !state.has_proxy_node_reader() {
+            return Ok(Some(build_admin_proxy_nodes_data_unavailable_response()));
+        }
+        let Some(group_id) = admin_proxy_group_scores_group_id_from_path(request_context.path())
+        else {
+            return Ok(Some(build_admin_proxy_nodes_not_found_response()));
+        };
+        return Ok(Some(
+            build_admin_proxy_group_scores_response(state, &group_id).await?,
+        ));
+    }
+
+    if decision.route_kind.as_deref() == Some("upsert_proxy_group_member")
+        && request_context.method() == http::Method::POST
+    {
+        if !state.has_proxy_node_writer() {
+            return Ok(Some(build_admin_proxy_nodes_data_unavailable_response()));
+        }
+        let Some((group_id, node_id)) =
+            admin_proxy_group_member_ids_from_path(request_context.path())
+        else {
+            return Ok(Some(build_admin_proxy_nodes_not_found_response()));
+        };
+        let input = match parse_json_body::<ProxyGroupMemberUpsertRequest>(request_body) {
+            Ok(input) => input,
+            Err(response) => return Ok(Some(response)),
+        };
+        let mutation = match validate_proxy_group_member_upsert_request(group_id, node_id, input) {
+            Ok(mutation) => mutation,
+            Err(response) => return Ok(Some(response)),
+        };
+        let Some(member) = state.upsert_proxy_group_member(&mutation).await? else {
+            return Ok(Some(build_admin_proxy_nodes_data_unavailable_response()));
+        };
+        return Ok(Some(
+            Json(json!({
+                "member": build_admin_proxy_group_member_payload(state, &member).await?,
+            }))
+            .into_response(),
+        ));
+    }
+
+    if decision.route_kind.as_deref() == Some("update_proxy_group_member")
+        && request_context.method() == http::Method::PATCH
+    {
+        if !state.has_proxy_node_writer() {
+            return Ok(Some(build_admin_proxy_nodes_data_unavailable_response()));
+        }
+        let Some((group_id, node_id)) =
+            admin_proxy_group_member_ids_from_path(request_context.path())
+        else {
+            return Ok(Some(build_admin_proxy_nodes_not_found_response()));
+        };
+        let input = match parse_json_body::<ProxyGroupMemberUpdateRequest>(request_body) {
+            Ok(input) => input,
+            Err(response) => return Ok(Some(response)),
+        };
+        let mutation = match validate_proxy_group_member_update_request(group_id, node_id, input) {
+            Ok(mutation) => mutation,
+            Err(response) => return Ok(Some(response)),
+        };
+        let Some(member) = state.update_proxy_group_member(&mutation).await? else {
+            return Ok(Some(build_admin_proxy_nodes_not_found_response()));
+        };
+        return Ok(Some(
+            Json(json!({
+                "member": build_admin_proxy_group_member_payload(state, &member).await?,
+            }))
+            .into_response(),
+        ));
+    }
+
+    if decision.route_kind.as_deref() == Some("delete_proxy_group_member")
+        && request_context.method() == http::Method::DELETE
+    {
+        if !state.has_proxy_node_writer() {
+            return Ok(Some(build_admin_proxy_nodes_data_unavailable_response()));
+        }
+        let Some((group_id, node_id)) =
+            admin_proxy_group_member_ids_from_path(request_context.path())
+        else {
+            return Ok(Some(build_admin_proxy_nodes_not_found_response()));
+        };
+        let Some(member) = state.delete_proxy_group_member(&group_id, &node_id).await? else {
+            return Ok(Some(build_admin_proxy_nodes_not_found_response()));
+        };
+        return Ok(Some(
+            Json(json!({
+                "message": "deleted",
+                "group_id": member.group_id,
+                "node_id": member.node_id,
+            }))
+            .into_response(),
+        ));
     }
 
     if decision.route_kind.as_deref() == Some("list_nodes")
@@ -884,6 +1147,196 @@ fn build_admin_proxy_node_detail_payload(
         }
     }
     payload
+}
+
+async fn build_admin_proxy_groups_list_response(
+    state: &AdminAppState<'_>,
+) -> Result<Response<Body>, GatewayError> {
+    let mut groups = state.list_proxy_groups().await?;
+    groups.sort_by(|left, right| left.name.cmp(&right.name).then(left.id.cmp(&right.id)));
+    let mut items = Vec::with_capacity(groups.len());
+    for group in &groups {
+        items.push(build_admin_proxy_group_payload(state, group).await?);
+    }
+    let total = items.len();
+    Ok(Json(json!({
+        "items": items,
+        "total": total,
+    }))
+    .into_response())
+}
+
+async fn build_admin_proxy_group_payload(
+    state: &AdminAppState<'_>,
+    group: &StoredProxyGroup,
+) -> Result<Value, GatewayError> {
+    let members = state.list_proxy_group_members(&group.id).await?;
+    let nodes_by_id = state
+        .list_proxy_nodes()
+        .await?
+        .into_iter()
+        .map(|node| (node.id.clone(), node))
+        .collect::<BTreeMap<_, _>>();
+    let scores = state.app().read_proxy_group_member_scores(&group.id).await;
+    let score_by_node = scores
+        .into_iter()
+        .map(|score| (score.node_id.clone(), score))
+        .collect::<BTreeMap<_, _>>();
+    let member_payloads = members
+        .iter()
+        .map(|member| {
+            build_admin_proxy_group_member_payload_from_maps(member, &nodes_by_id, &score_by_node)
+        })
+        .collect::<Vec<_>>();
+    let available_member_count = score_by_node
+        .values()
+        .filter(|score| score.available)
+        .count();
+    let best = score_by_node
+        .values()
+        .filter(|score| score.available)
+        .max_by(|left, right| {
+            left.effective_score
+                .partial_cmp(&right.effective_score)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
+    let recent_error_summary = score_by_node
+        .values()
+        .filter(|score| !score.available)
+        .filter_map(|score| {
+            score
+                .score_reason
+                .get("availability")
+                .and_then(Value::as_str)
+                .map(|reason| format!("{}:{}", score.node_id, reason))
+        })
+        .take(3)
+        .collect::<Vec<_>>();
+
+    Ok(json!({
+        "id": group.id,
+        "name": group.name,
+        "description": group.description,
+        "enabled": group.enabled,
+        "strategy": group.strategy,
+        "top_n": group.top_n,
+        "created_at": group.created_at_unix_secs.and_then(unix_secs_to_rfc3339),
+        "updated_at": group.updated_at_unix_secs.and_then(unix_secs_to_rfc3339),
+        "member_count": members.len(),
+        "available_member_count": available_member_count,
+        "current_best_member": best.map(|score| json!({
+            "node_id": score.node_id,
+            "score": score.score,
+            "effective_score": score.effective_score,
+            "node": nodes_by_id.get(&score.node_id).map(build_admin_proxy_group_node_summary_payload),
+        })),
+        "recent_error_summary": recent_error_summary,
+        "members": member_payloads,
+    }))
+}
+
+async fn build_admin_proxy_group_member_payload(
+    state: &AdminAppState<'_>,
+    member: &StoredProxyGroupMember,
+) -> Result<Value, GatewayError> {
+    let nodes_by_id = state
+        .list_proxy_nodes()
+        .await?
+        .into_iter()
+        .map(|node| (node.id.clone(), node))
+        .collect::<BTreeMap<_, _>>();
+    let score_by_node = state
+        .app()
+        .read_proxy_group_member_scores(&member.group_id)
+        .await
+        .into_iter()
+        .map(|score| (score.node_id.clone(), score))
+        .collect::<BTreeMap<_, _>>();
+    Ok(build_admin_proxy_group_member_payload_from_maps(
+        member,
+        &nodes_by_id,
+        &score_by_node,
+    ))
+}
+
+async fn build_admin_proxy_group_scores_response(
+    state: &AdminAppState<'_>,
+    group_id: &str,
+) -> Result<Response<Body>, GatewayError> {
+    let Some(group) = state.find_proxy_group(group_id).await? else {
+        return Ok(build_admin_proxy_nodes_not_found_response());
+    };
+    let nodes_by_id = state
+        .list_proxy_nodes()
+        .await?
+        .into_iter()
+        .map(|node| (node.id.clone(), node))
+        .collect::<BTreeMap<_, _>>();
+    let items = state
+        .app()
+        .read_proxy_group_member_scores(&group.id)
+        .await
+        .into_iter()
+        .map(|score| {
+            json!({
+                "group_id": score.group_id,
+                "node_id": score.node_id,
+                "score": score.score,
+                "effective_score": score.effective_score,
+                "hard_state": score.hard_state.as_database(),
+                "available": score.available,
+                "enabled": score.enabled,
+                "sort_index": score.sort_index,
+                "score_reason": score.score_reason,
+                "node": nodes_by_id.get(&score.node_id).map(build_admin_proxy_group_node_summary_payload),
+            })
+        })
+        .collect::<Vec<_>>();
+    let total = items.len();
+    Ok(Json(json!({
+        "group_id": group.id,
+        "items": items,
+        "total": total,
+    }))
+    .into_response())
+}
+
+fn build_admin_proxy_group_member_payload_from_maps(
+    member: &StoredProxyGroupMember,
+    nodes_by_id: &BTreeMap<String, StoredProxyNode>,
+    score_by_node: &BTreeMap<String, crate::state::ProxyGroupMemberScoreSnapshot>,
+) -> Value {
+    let score = score_by_node.get(&member.node_id);
+    json!({
+        "group_id": member.group_id,
+        "node_id": member.node_id,
+        "enabled": member.enabled,
+        "manual_weight": member.manual_weight,
+        "sort_index": member.sort_index,
+        "created_at": member.created_at_unix_secs.and_then(unix_secs_to_rfc3339),
+        "updated_at": member.updated_at_unix_secs.and_then(unix_secs_to_rfc3339),
+        "node": nodes_by_id.get(&member.node_id).map(build_admin_proxy_group_node_summary_payload),
+        "score": score.map(|score| score.score),
+        "effective_score": score.map(|score| score.effective_score),
+        "hard_state": score.map(|score| score.hard_state.as_database()),
+        "available": score.map(|score| score.available).unwrap_or(false),
+        "score_reason": score.map(|score| score.score_reason.clone()),
+    })
+}
+
+fn build_admin_proxy_group_node_summary_payload(node: &StoredProxyNode) -> Value {
+    json!({
+        "id": node.id,
+        "name": node.name,
+        "status": node.status,
+        "region": node.region,
+        "is_manual": node.is_manual,
+        "tunnel_mode": node.tunnel_mode,
+        "tunnel_connected": node.tunnel_connected,
+        "active_connections": node.active_connections,
+        "estimated_max_concurrency": node.estimated_max_concurrency,
+        "avg_latency_ms": node.avg_latency_ms,
+    })
 }
 
 #[derive(Debug, Clone)]
@@ -1572,6 +2025,159 @@ fn validate_proxy_test_url_request(
         password.as_deref(),
     )
     .unwrap_or(endpoint.proxy_url))
+}
+
+fn validate_proxy_group_create_request(
+    input: ProxyGroupCreateRequest,
+) -> Result<ProxyGroupCreateMutation, Response<Body>> {
+    let name = normalize_required_string(&input.name, "name", 255)?;
+    let description = normalize_optional_string(input.description.as_deref(), "description", 500)?;
+    let strategy = input
+        .strategy
+        .as_deref()
+        .map(normalize_proxy_group_strategy)
+        .transpose()?;
+    if let Some(top_n) = input.top_n {
+        if top_n < 1 {
+            return Err(bad_request_response("top_n 必须大于 0"));
+        }
+    }
+    Ok(ProxyGroupCreateMutation {
+        name,
+        description,
+        enabled: input.enabled,
+        strategy,
+        top_n: input.top_n,
+    })
+}
+
+fn validate_proxy_group_update_request(
+    group_id: String,
+    input: ProxyGroupUpdateRequest,
+) -> Result<ProxyGroupUpdateMutation, Response<Body>> {
+    let name = input
+        .name
+        .as_deref()
+        .map(|value| normalize_required_string(value, "name", 255))
+        .transpose()?;
+    let description = input
+        .description
+        .as_ref()
+        .map(|value| match value {
+            Some(value) => normalize_optional_string(Some(value.as_str()), "description", 500),
+            None => Ok(None),
+        })
+        .transpose()?;
+    let strategy = input
+        .strategy
+        .as_deref()
+        .map(normalize_proxy_group_strategy)
+        .transpose()?;
+    if let Some(top_n) = input.top_n {
+        if top_n < 1 {
+            return Err(bad_request_response("top_n 必须大于 0"));
+        }
+    }
+    if name.is_none()
+        && description.is_none()
+        && input.enabled.is_none()
+        && strategy.is_none()
+        && input.top_n.is_none()
+    {
+        return Err(bad_request_response("至少提供一个可更新字段"));
+    }
+    Ok(ProxyGroupUpdateMutation {
+        group_id,
+        name,
+        description,
+        enabled: input.enabled,
+        strategy,
+        top_n: input.top_n,
+    })
+}
+
+fn normalize_proxy_group_strategy(value: &str) -> Result<String, Response<Body>> {
+    let strategy = normalize_required_string(value, "strategy", 64)?.to_ascii_lowercase();
+    if PROXY_GROUP_STRATEGIES.contains(&strategy.as_str()) {
+        return Ok(strategy);
+    }
+    Err(bad_request_response(
+        "strategy 必须是 balanced_weighted、stable_failover、success_rate 或 manual_priority",
+    ))
+}
+
+fn validate_proxy_group_member_upsert_request(
+    group_id: String,
+    node_id: String,
+    input: ProxyGroupMemberUpsertRequest,
+) -> Result<ProxyGroupMemberUpsertMutation, Response<Body>> {
+    validate_proxy_group_member_weight(input.manual_weight)?;
+    Ok(ProxyGroupMemberUpsertMutation {
+        group_id,
+        node_id,
+        enabled: input.enabled,
+        manual_weight: input.manual_weight,
+        sort_index: input.sort_index,
+    })
+}
+
+fn validate_proxy_group_member_update_request(
+    group_id: String,
+    node_id: String,
+    input: ProxyGroupMemberUpdateRequest,
+) -> Result<ProxyGroupMemberUpdateMutation, Response<Body>> {
+    validate_proxy_group_member_weight(input.manual_weight)?;
+    if input.enabled.is_none() && input.manual_weight.is_none() && input.sort_index.is_none() {
+        return Err(bad_request_response("至少提供一个可更新字段"));
+    }
+    Ok(ProxyGroupMemberUpdateMutation {
+        group_id,
+        node_id,
+        enabled: input.enabled,
+        manual_weight: input.manual_weight,
+        sort_index: input.sort_index,
+    })
+}
+
+fn validate_proxy_group_member_weight(value: Option<f64>) -> Result<(), Response<Body>> {
+    if value.map(|value| !value.is_finite()).unwrap_or(false) {
+        return Err(bad_request_response("manual_weight 必须是有限数字"));
+    }
+    Ok(())
+}
+
+fn admin_proxy_group_id_from_path(path: &str) -> Option<String> {
+    let normalized = path.trim_end_matches('/');
+    let group_id = normalized.strip_prefix("/api/admin/proxy-groups/")?;
+    if group_id.is_empty() || group_id.contains('/') {
+        None
+    } else {
+        normalize_required_string(group_id, "group_id", 64).ok()
+    }
+}
+
+fn admin_proxy_group_scores_group_id_from_path(path: &str) -> Option<String> {
+    let normalized = path.trim_end_matches('/');
+    let group_id = normalized.strip_prefix("/api/admin/proxy-groups/")?;
+    let group_id = group_id.strip_suffix("/scores")?;
+    if group_id.is_empty() || group_id.contains('/') {
+        None
+    } else {
+        normalize_required_string(group_id, "group_id", 64).ok()
+    }
+}
+
+fn admin_proxy_group_member_ids_from_path(path: &str) -> Option<(String, String)> {
+    let normalized = path.trim_end_matches('/');
+    let rest = normalized.strip_prefix("/api/admin/proxy-groups/")?;
+    let (group_id, node_part) = rest.split_once("/members/")?;
+    if group_id.is_empty() || node_part.is_empty() || node_part.contains('/') {
+        return None;
+    }
+    Some((
+        normalize_required_string(group_id, "group_id", 64).ok()?,
+        normalize_required_string(node_part, "node_id", 64).ok()?,
+    ))
 }
 
 fn admin_proxy_node_upgrade_action_node_id_from_path(path: &str, suffix: &str) -> Option<String> {

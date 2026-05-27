@@ -5,12 +5,14 @@ use super::types::{
     bucket_start_unix_secs, build_tunnel_error_event_detail, build_tunnel_metrics_sample,
     log_reported_tunnel_error_event, normalize_proxy_metadata,
     preserve_proxy_metadata_tunnel_security, reconcile_remote_config_after_heartbeat,
-    ProxyNodeEventQuery, ProxyNodeHeartbeatMutation, ProxyNodeManualCreateMutation,
-    ProxyNodeManualUpdateMutation, ProxyNodeMetricsCleanupSummary, ProxyNodeMetricsStep,
-    ProxyNodeReadRepository, ProxyNodeRegistrationMutation, ProxyNodeRemoteConfigMutation,
-    ProxyNodeTrafficMutation, ProxyNodeTunnelStatusMutation, ProxyNodeWriteRepository,
-    StoredProxyFleetMetricsBucket, StoredProxyNode, StoredProxyNodeEvent,
-    StoredProxyNodeMetricsBucket, PROXY_NODE_EVENT_TYPE_TUNNEL_ERROR,
+    ProxyGroupCreateMutation, ProxyGroupMemberUpdateMutation, ProxyGroupMemberUpsertMutation,
+    ProxyGroupUpdateMutation, ProxyNodeEventQuery, ProxyNodeHeartbeatMutation,
+    ProxyNodeManualCreateMutation, ProxyNodeManualUpdateMutation, ProxyNodeMetricsCleanupSummary,
+    ProxyNodeMetricsStep, ProxyNodeReadRepository, ProxyNodeRegistrationMutation,
+    ProxyNodeRemoteConfigMutation, ProxyNodeTrafficMutation, ProxyNodeTunnelStatusMutation,
+    ProxyNodeWriteRepository, StoredProxyFleetMetricsBucket, StoredProxyGroup,
+    StoredProxyGroupMember, StoredProxyNode, StoredProxyNodeEvent, StoredProxyNodeMetricsBucket,
+    DEFAULT_PROXY_GROUP_STRATEGY, PROXY_NODE_EVENT_TYPE_TUNNEL_ERROR,
 };
 use crate::driver::mysql::MysqlPool;
 use crate::error::SqlResultExt;
@@ -338,6 +340,31 @@ SELECT
 FROM proxy_nodes
 "#;
 
+const PROXY_GROUP_COLUMNS: &str = r#"
+SELECT
+  id,
+  name,
+  description,
+  enabled,
+  strategy,
+  top_n,
+  created_at AS created_at_unix_secs,
+  updated_at AS updated_at_unix_secs
+FROM proxy_groups
+"#;
+
+const PROXY_GROUP_MEMBER_COLUMNS: &str = r#"
+SELECT
+  group_id,
+  node_id,
+  enabled,
+  manual_weight,
+  sort_index,
+  created_at AS created_at_unix_secs,
+  updated_at AS updated_at_unix_secs
+FROM proxy_group_members
+"#;
+
 #[async_trait]
 impl ProxyNodeReadRepository for MysqlProxyNodeReadRepository {
     async fn list_proxy_nodes(&self) -> Result<Vec<StoredProxyNode>, DataLayerError> {
@@ -358,6 +385,40 @@ impl ProxyNodeReadRepository for MysqlProxyNodeReadRepository {
             .await
             .map_sql_err()?;
         row.as_ref().map(map_proxy_node_row).transpose()
+    }
+
+    async fn list_proxy_groups(&self) -> Result<Vec<StoredProxyGroup>, DataLayerError> {
+        let rows = sqlx::query(&format!("{PROXY_GROUP_COLUMNS} ORDER BY name ASC, id ASC"))
+            .fetch_all(&self.pool)
+            .await
+            .map_sql_err()?;
+        rows.iter().map(map_proxy_group_row).collect()
+    }
+
+    async fn find_proxy_group(
+        &self,
+        group_id: &str,
+    ) -> Result<Option<StoredProxyGroup>, DataLayerError> {
+        let row = sqlx::query(&format!("{PROXY_GROUP_COLUMNS} WHERE id = ? LIMIT 1"))
+            .bind(group_id)
+            .fetch_optional(&self.pool)
+            .await
+            .map_sql_err()?;
+        row.as_ref().map(map_proxy_group_row).transpose()
+    }
+
+    async fn list_proxy_group_members(
+        &self,
+        group_id: &str,
+    ) -> Result<Vec<StoredProxyGroupMember>, DataLayerError> {
+        let rows = sqlx::query(&format!(
+            "{PROXY_GROUP_MEMBER_COLUMNS} WHERE group_id = ? ORDER BY sort_index ASC, node_id ASC"
+        ))
+        .bind(group_id)
+        .fetch_all(&self.pool)
+        .await
+        .map_sql_err()?;
+        rows.iter().map(map_proxy_group_member_row).collect()
     }
 
     async fn list_proxy_node_events(
@@ -657,6 +718,256 @@ WHERE is_manual = 0
         node.updated_at_unix_secs = Some(current_unix_secs());
         self.upsert_node(&node).await?;
         Ok(Some(node))
+    }
+
+    async fn create_proxy_group(
+        &self,
+        mutation: &ProxyGroupCreateMutation,
+    ) -> Result<StoredProxyGroup, DataLayerError> {
+        let group_id = uuid::Uuid::new_v4().to_string();
+        let now = current_unix_secs() as i64;
+        let enabled = mutation.enabled.unwrap_or(true);
+        let strategy = mutation
+            .strategy
+            .clone()
+            .unwrap_or_else(|| DEFAULT_PROXY_GROUP_STRATEGY.to_string());
+        let top_n = mutation.top_n.unwrap_or(3).max(1);
+        StoredProxyGroup::new(
+            group_id.clone(),
+            mutation.name.clone(),
+            enabled,
+            strategy.clone(),
+            top_n,
+        )?;
+        sqlx::query(
+            r#"
+INSERT INTO proxy_groups (id, name, description, enabled, strategy, top_n, created_at, updated_at)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+"#,
+        )
+        .bind(&group_id)
+        .bind(&mutation.name)
+        .bind(mutation.description.as_deref())
+        .bind(enabled)
+        .bind(&strategy)
+        .bind(top_n)
+        .bind(now)
+        .bind(now)
+        .execute(&self.pool)
+        .await
+        .map_sql_err()?;
+        self.find_proxy_group(&group_id).await?.ok_or_else(|| {
+            DataLayerError::UnexpectedValue("created proxy group missing".to_string())
+        })
+    }
+
+    async fn update_proxy_group(
+        &self,
+        mutation: &ProxyGroupUpdateMutation,
+    ) -> Result<Option<StoredProxyGroup>, DataLayerError> {
+        let Some(mut group) = self.find_proxy_group(&mutation.group_id).await? else {
+            return Ok(None);
+        };
+        if let Some(name) = mutation.name.as_ref() {
+            if name.trim().is_empty() {
+                return Err(DataLayerError::InvalidInput(
+                    "proxy group name cannot be empty".to_string(),
+                ));
+            }
+            group.name = name.clone();
+        }
+        if let Some(description) = mutation.description.as_ref() {
+            group.description = description.clone();
+        }
+        if let Some(enabled) = mutation.enabled {
+            group.enabled = enabled;
+        }
+        if let Some(strategy) = mutation.strategy.as_ref() {
+            if strategy.trim().is_empty() {
+                return Err(DataLayerError::InvalidInput(
+                    "proxy group strategy cannot be empty".to_string(),
+                ));
+            }
+            group.strategy = strategy.clone();
+        }
+        if let Some(top_n) = mutation.top_n {
+            if top_n < 1 {
+                return Err(DataLayerError::InvalidInput(
+                    "proxy group top_n must be positive".to_string(),
+                ));
+            }
+            group.top_n = top_n;
+        }
+        let now = current_unix_secs() as i64;
+        sqlx::query(
+            r#"
+UPDATE proxy_groups
+SET name = ?, description = ?, enabled = ?, strategy = ?, top_n = ?, updated_at = ?
+WHERE id = ?
+"#,
+        )
+        .bind(&group.name)
+        .bind(group.description.as_deref())
+        .bind(group.enabled)
+        .bind(&group.strategy)
+        .bind(group.top_n)
+        .bind(now)
+        .bind(&mutation.group_id)
+        .execute(&self.pool)
+        .await
+        .map_sql_err()?;
+        self.find_proxy_group(&mutation.group_id).await
+    }
+
+    async fn delete_proxy_group(
+        &self,
+        group_id: &str,
+    ) -> Result<Option<StoredProxyGroup>, DataLayerError> {
+        let existing = self.find_proxy_group(group_id).await?;
+        if existing.is_none() {
+            return Ok(None);
+        }
+        sqlx::query("DELETE FROM proxy_group_members WHERE group_id = ?")
+            .bind(group_id)
+            .execute(&self.pool)
+            .await
+            .map_sql_err()?;
+        sqlx::query("DELETE FROM proxy_groups WHERE id = ?")
+            .bind(group_id)
+            .execute(&self.pool)
+            .await
+            .map_sql_err()?;
+        Ok(existing)
+    }
+
+    async fn upsert_proxy_group_member(
+        &self,
+        mutation: &ProxyGroupMemberUpsertMutation,
+    ) -> Result<StoredProxyGroupMember, DataLayerError> {
+        if self.find_proxy_group(&mutation.group_id).await?.is_none() {
+            return Err(DataLayerError::InvalidInput(format!(
+                "proxy group not found: {}",
+                mutation.group_id
+            )));
+        }
+        if self.find_proxy_node(&mutation.node_id).await?.is_none() {
+            return Err(DataLayerError::InvalidInput(format!(
+                "proxy node not found: {}",
+                mutation.node_id
+            )));
+        }
+        if mutation
+            .manual_weight
+            .map(|value| !value.is_finite())
+            .unwrap_or(false)
+        {
+            return Err(DataLayerError::InvalidInput(
+                "proxy group member manual_weight must be finite".to_string(),
+            ));
+        }
+        let now = current_unix_secs() as i64;
+        sqlx::query(
+            r#"
+INSERT INTO proxy_group_members (
+  group_id, node_id, enabled, manual_weight, sort_index, created_at, updated_at
+)
+VALUES (?, ?, ?, ?, ?, ?, ?)
+ON DUPLICATE KEY UPDATE
+  enabled = VALUES(enabled),
+  manual_weight = VALUES(manual_weight),
+  sort_index = VALUES(sort_index),
+  updated_at = VALUES(updated_at)
+"#,
+        )
+        .bind(&mutation.group_id)
+        .bind(&mutation.node_id)
+        .bind(mutation.enabled.unwrap_or(true))
+        .bind(mutation.manual_weight.unwrap_or(1.0))
+        .bind(mutation.sort_index.unwrap_or(0))
+        .bind(now)
+        .bind(now)
+        .execute(&self.pool)
+        .await
+        .map_sql_err()?;
+        self.list_proxy_group_members(&mutation.group_id)
+            .await?
+            .into_iter()
+            .find(|member| member.node_id == mutation.node_id)
+            .ok_or_else(|| {
+                DataLayerError::UnexpectedValue("upserted proxy group member missing".to_string())
+            })
+    }
+
+    async fn update_proxy_group_member(
+        &self,
+        mutation: &ProxyGroupMemberUpdateMutation,
+    ) -> Result<Option<StoredProxyGroupMember>, DataLayerError> {
+        let Some(mut member) = self
+            .list_proxy_group_members(&mutation.group_id)
+            .await?
+            .into_iter()
+            .find(|member| member.node_id == mutation.node_id)
+        else {
+            return Ok(None);
+        };
+        if let Some(enabled) = mutation.enabled {
+            member.enabled = enabled;
+        }
+        if let Some(manual_weight) = mutation.manual_weight {
+            if !manual_weight.is_finite() {
+                return Err(DataLayerError::InvalidInput(
+                    "proxy group member manual_weight must be finite".to_string(),
+                ));
+            }
+            member.manual_weight = manual_weight;
+        }
+        if let Some(sort_index) = mutation.sort_index {
+            member.sort_index = sort_index;
+        }
+        let now = current_unix_secs() as i64;
+        sqlx::query(
+            r#"
+UPDATE proxy_group_members
+SET enabled = ?, manual_weight = ?, sort_index = ?, updated_at = ?
+WHERE group_id = ? AND node_id = ?
+"#,
+        )
+        .bind(member.enabled)
+        .bind(member.manual_weight)
+        .bind(member.sort_index)
+        .bind(now)
+        .bind(&mutation.group_id)
+        .bind(&mutation.node_id)
+        .execute(&self.pool)
+        .await
+        .map_sql_err()?;
+        Ok(self
+            .list_proxy_group_members(&mutation.group_id)
+            .await?
+            .into_iter()
+            .find(|member| member.node_id == mutation.node_id))
+    }
+
+    async fn delete_proxy_group_member(
+        &self,
+        group_id: &str,
+        node_id: &str,
+    ) -> Result<Option<StoredProxyGroupMember>, DataLayerError> {
+        let existing = self
+            .list_proxy_group_members(group_id)
+            .await?
+            .into_iter()
+            .find(|member| member.node_id == node_id);
+        if existing.is_none() {
+            return Ok(None);
+        }
+        sqlx::query("DELETE FROM proxy_group_members WHERE group_id = ? AND node_id = ?")
+            .bind(group_id)
+            .bind(node_id)
+            .execute(&self.pool)
+            .await
+            .map_sql_err()?;
+        Ok(existing)
     }
 
     async fn register_node(
@@ -972,6 +1283,11 @@ WHERE is_manual = 0
                 .execute(&self.pool)
                 .await
                 .map_sql_err()?;
+            sqlx::query("DELETE FROM proxy_group_members WHERE node_id = ?")
+                .bind(node_id)
+                .execute(&self.pool)
+                .await
+                .map_sql_err()?;
             sqlx::query("DELETE FROM proxy_node_metrics_1m WHERE node_id = ?")
                 .bind(node_id)
                 .execute(&self.pool)
@@ -1185,6 +1501,35 @@ fn map_proxy_node_row(row: &MySqlRow) -> Result<StoredProxyNode, DataLayerError>
             "proxy_nodes.remote_config",
         )?,
         optional_unix_secs(row.try_get("created_at_unix_ms").map_sql_err()?),
+        optional_unix_secs(row.try_get("updated_at_unix_secs").map_sql_err()?),
+    ))
+}
+
+fn map_proxy_group_row(row: &MySqlRow) -> Result<StoredProxyGroup, DataLayerError> {
+    Ok(StoredProxyGroup::new(
+        row.try_get("id").map_sql_err()?,
+        row.try_get("name").map_sql_err()?,
+        row.try_get("enabled").map_sql_err()?,
+        row.try_get("strategy").map_sql_err()?,
+        row.try_get("top_n").map_sql_err()?,
+    )?
+    .with_description(row.try_get("description").map_sql_err()?)
+    .with_timestamps(
+        optional_unix_secs(row.try_get("created_at_unix_secs").map_sql_err()?),
+        optional_unix_secs(row.try_get("updated_at_unix_secs").map_sql_err()?),
+    ))
+}
+
+fn map_proxy_group_member_row(row: &MySqlRow) -> Result<StoredProxyGroupMember, DataLayerError> {
+    Ok(StoredProxyGroupMember::new(
+        row.try_get("group_id").map_sql_err()?,
+        row.try_get("node_id").map_sql_err()?,
+        row.try_get("enabled").map_sql_err()?,
+        row.try_get("manual_weight").map_sql_err()?,
+        row.try_get("sort_index").map_sql_err()?,
+    )?
+    .with_timestamps(
+        optional_unix_secs(row.try_get("created_at_unix_secs").map_sql_err()?),
         optional_unix_secs(row.try_get("updated_at_unix_secs").map_sql_err()?),
     ))
 }

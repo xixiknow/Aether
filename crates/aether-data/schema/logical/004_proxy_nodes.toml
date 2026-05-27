@@ -186,6 +186,115 @@ nullable = true
 name = "created_at"
 type = "unix_seconds"
 
+[table.proxy_groups]
+domain = "proxy_nodes"
+order = 25
+primary_key = ["id"]
+
+[[table.proxy_groups.columns]]
+name = "id"
+type = "text_id"
+length = 64
+
+[[table.proxy_groups.columns]]
+name = "name"
+type = "text"
+length = 255
+
+[[table.proxy_groups.columns]]
+name = "description"
+type = "text"
+length = 500
+nullable = true
+
+[[table.proxy_groups.columns]]
+name = "enabled"
+type = "bool"
+default = true
+
+[[table.proxy_groups.columns]]
+name = "strategy"
+type = "text"
+length = 64
+default = "balanced_weighted"
+
+[[table.proxy_groups.columns]]
+name = "top_n"
+type = "int32"
+default = 3
+
+[[table.proxy_groups.columns]]
+name = "created_at"
+type = "unix_seconds"
+
+[[table.proxy_groups.columns]]
+name = "updated_at"
+type = "unix_seconds"
+
+[[table.proxy_groups.indexes]]
+name = "idx_proxy_groups_enabled"
+columns = ["enabled", "name"]
+
+[table.proxy_group_members]
+domain = "proxy_nodes"
+order = 26
+primary_key = ["group_id", "node_id"]
+
+[[table.proxy_group_members.columns]]
+name = "group_id"
+type = "text_id"
+length = 64
+
+[[table.proxy_group_members.columns]]
+name = "node_id"
+type = "text_id"
+length = 64
+
+[[table.proxy_group_members.columns]]
+name = "enabled"
+type = "bool"
+default = true
+
+[[table.proxy_group_members.columns]]
+name = "manual_weight"
+type = "float64"
+default = 1
+
+[[table.proxy_group_members.columns]]
+name = "sort_index"
+type = "int32"
+default = 0
+
+[[table.proxy_group_members.columns]]
+name = "created_at"
+type = "unix_seconds"
+
+[[table.proxy_group_members.columns]]
+name = "updated_at"
+type = "unix_seconds"
+
+[[table.proxy_group_members.indexes]]
+name = "idx_proxy_group_members_node_id"
+columns = ["node_id"]
+
+[[table.proxy_group_members.indexes]]
+name = "idx_proxy_group_members_group_sort"
+columns = ["group_id", "enabled", "sort_index"]
+
+[[table.proxy_group_members.foreign_keys]]
+name = "fk_proxy_group_members_group"
+columns = ["group_id"]
+references_table = "proxy_groups"
+references_columns = ["id"]
+on_delete = "cascade"
+
+[[table.proxy_group_members.foreign_keys]]
+name = "fk_proxy_group_members_node"
+columns = ["node_id"]
+references_table = "proxy_nodes"
+references_columns = ["id"]
+on_delete = "cascade"
+
 [table.proxy_node_metrics_1m]
 domain = "proxy_nodes"
 order = 30

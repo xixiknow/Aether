@@ -37,6 +37,87 @@ fn classifies_admin_proxy_nodes_list_as_admin_proxy_route() {
 }
 
 #[test]
+fn classifies_admin_proxy_groups_list_as_admin_proxy_route() {
+    assert_proxy_nodes_admin_route(
+        http::Method::GET,
+        "/api/admin/proxy-groups",
+        "list_proxy_groups",
+    );
+}
+
+#[test]
+fn classifies_admin_proxy_groups_create_as_admin_proxy_route() {
+    assert_proxy_nodes_admin_route(
+        http::Method::POST,
+        "/api/admin/proxy-groups",
+        "create_proxy_group",
+    );
+}
+
+#[test]
+fn classifies_admin_proxy_group_detail_as_admin_proxy_route() {
+    assert_proxy_nodes_admin_route(
+        http::Method::GET,
+        "/api/admin/proxy-groups/group-1",
+        "get_proxy_group",
+    );
+}
+
+#[test]
+fn classifies_admin_proxy_group_update_as_admin_proxy_route() {
+    assert_proxy_nodes_admin_route(
+        http::Method::PATCH,
+        "/api/admin/proxy-groups/group-1",
+        "update_proxy_group",
+    );
+}
+
+#[test]
+fn classifies_admin_proxy_group_delete_as_admin_proxy_route() {
+    assert_proxy_nodes_admin_route(
+        http::Method::DELETE,
+        "/api/admin/proxy-groups/group-1",
+        "delete_proxy_group",
+    );
+}
+
+#[test]
+fn classifies_admin_proxy_group_scores_as_admin_proxy_route() {
+    assert_proxy_nodes_admin_route(
+        http::Method::GET,
+        "/api/admin/proxy-groups/group-1/scores",
+        "list_proxy_group_scores",
+    );
+}
+
+#[test]
+fn classifies_admin_proxy_group_member_upsert_as_admin_proxy_route() {
+    assert_proxy_nodes_admin_route(
+        http::Method::POST,
+        "/api/admin/proxy-groups/group-1/members/node-1",
+        "upsert_proxy_group_member",
+    );
+}
+
+#[test]
+fn classifies_admin_proxy_group_member_update_as_admin_proxy_route() {
+    assert_proxy_nodes_admin_route(
+        http::Method::PATCH,
+        "/api/admin/proxy-groups/group-1/members/node-1",
+        "update_proxy_group_member",
+    );
+}
+
+#[test]
+fn classifies_admin_proxy_group_member_delete_as_admin_proxy_route() {
+    assert_proxy_nodes_admin_route(
+        http::Method::DELETE,
+        "/api/admin/proxy-groups/group-1/members/node-1",
+        "delete_proxy_group_member",
+    );
+}
+
+#[test]
 fn classifies_admin_proxy_nodes_register_as_admin_proxy_route() {
     let headers = headers(&[]);
     let uri: Uri = "/api/admin/proxy-nodes/register"

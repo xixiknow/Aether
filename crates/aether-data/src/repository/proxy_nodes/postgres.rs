@@ -7,12 +7,14 @@ use super::types::{
     bucket_start_unix_secs, build_tunnel_error_event_detail, build_tunnel_metrics_sample,
     log_reported_tunnel_error_event, normalize_proxy_metadata,
     preserve_proxy_metadata_tunnel_security, reconcile_remote_config_after_heartbeat,
-    ProxyNodeEventQuery, ProxyNodeHeartbeatMutation, ProxyNodeManualCreateMutation,
-    ProxyNodeManualUpdateMutation, ProxyNodeMetricsCleanupSummary, ProxyNodeMetricsStep,
-    ProxyNodeReadRepository, ProxyNodeRegistrationMutation, ProxyNodeRemoteConfigMutation,
-    ProxyNodeTrafficMutation, ProxyNodeTunnelStatusMutation, ProxyNodeWriteRepository,
-    StoredProxyFleetMetricsBucket, StoredProxyNode, StoredProxyNodeEvent,
-    StoredProxyNodeMetricsBucket, TunnelMetricsSample, PROXY_NODE_EVENT_TYPE_TUNNEL_ERROR,
+    ProxyGroupCreateMutation, ProxyGroupMemberUpdateMutation, ProxyGroupMemberUpsertMutation,
+    ProxyGroupUpdateMutation, ProxyNodeEventQuery, ProxyNodeHeartbeatMutation,
+    ProxyNodeManualCreateMutation, ProxyNodeManualUpdateMutation, ProxyNodeMetricsCleanupSummary,
+    ProxyNodeMetricsStep, ProxyNodeReadRepository, ProxyNodeRegistrationMutation,
+    ProxyNodeRemoteConfigMutation, ProxyNodeTrafficMutation, ProxyNodeTunnelStatusMutation,
+    ProxyNodeWriteRepository, StoredProxyFleetMetricsBucket, StoredProxyGroup,
+    StoredProxyGroupMember, StoredProxyNode, StoredProxyNodeEvent, StoredProxyNodeMetricsBucket,
+    TunnelMetricsSample, DEFAULT_PROXY_GROUP_STRATEGY, PROXY_NODE_EVENT_TYPE_TUNNEL_ERROR,
 };
 use crate::{
     error::{postgres_error, SqlxResultExt},
@@ -68,6 +70,31 @@ FROM proxy_node_events
 WHERE node_id = $1
 ORDER BY created_at DESC, id DESC
 LIMIT $2
+"#;
+
+const PROXY_GROUP_COLUMNS_SQL: &str = r#"
+SELECT
+  id,
+  name,
+  description,
+  enabled,
+  strategy,
+  top_n,
+  EXTRACT(EPOCH FROM created_at)::bigint AS created_at_unix_secs,
+  EXTRACT(EPOCH FROM updated_at)::bigint AS updated_at_unix_secs
+FROM proxy_groups
+"#;
+
+const PROXY_GROUP_MEMBER_COLUMNS_SQL: &str = r#"
+SELECT
+  group_id,
+  node_id,
+  enabled,
+  CAST(manual_weight AS DOUBLE PRECISION) AS manual_weight,
+  sort_index,
+  EXTRACT(EPOCH FROM created_at)::bigint AS created_at_unix_secs,
+  EXTRACT(EPOCH FROM updated_at)::bigint AS updated_at_unix_secs
+FROM proxy_group_members
 "#;
 
 const APPLY_HEARTBEAT_SQL: &str = r#"
@@ -594,6 +621,35 @@ impl SqlxProxyNodeRepository {
         ))
     }
 
+    fn row_to_proxy_group(row: &PgRow) -> Result<StoredProxyGroup, DataLayerError> {
+        Ok(StoredProxyGroup::new(
+            row.try_get("id").map_postgres_err()?,
+            row.try_get("name").map_postgres_err()?,
+            row.try_get("enabled").map_postgres_err()?,
+            row.try_get("strategy").map_postgres_err()?,
+            row.try_get("top_n").map_postgres_err()?,
+        )?
+        .with_description(row.try_get("description").map_postgres_err()?)
+        .with_timestamps(
+            Self::optional_unix_secs(row.try_get("created_at_unix_secs").map_postgres_err()?),
+            Self::optional_unix_secs(row.try_get("updated_at_unix_secs").map_postgres_err()?),
+        ))
+    }
+
+    fn row_to_proxy_group_member(row: &PgRow) -> Result<StoredProxyGroupMember, DataLayerError> {
+        Ok(StoredProxyGroupMember::new(
+            row.try_get("group_id").map_postgres_err()?,
+            row.try_get("node_id").map_postgres_err()?,
+            row.try_get("enabled").map_postgres_err()?,
+            row.try_get("manual_weight").map_postgres_err()?,
+            row.try_get("sort_index").map_postgres_err()?,
+        )?
+        .with_timestamps(
+            Self::optional_unix_secs(row.try_get("created_at_unix_secs").map_postgres_err()?),
+            Self::optional_unix_secs(row.try_get("updated_at_unix_secs").map_postgres_err()?),
+        ))
+    }
+
     fn row_to_event(row: &PgRow) -> Result<StoredProxyNodeEvent, DataLayerError> {
         Ok(StoredProxyNodeEvent {
             id: row.try_get("id").map_postgres_err()?,
@@ -846,6 +902,54 @@ impl ProxyNodeReadRepository for SqlxProxyNodeRepository {
         row.map(|row| Self::row_to_stored(&row)).transpose()
     }
 
+    async fn list_proxy_groups(&self) -> Result<Vec<StoredProxyGroup>, DataLayerError> {
+        let mut builder = QueryBuilder::<Postgres>::new(PROXY_GROUP_COLUMNS_SQL);
+        builder.push(" ORDER BY name ASC, id ASC");
+        let mut rows = builder.build().fetch(&self.pool);
+        let mut items = Vec::new();
+        while let Some(row) = rows.try_next().await.map_postgres_err()? {
+            items.push(Self::row_to_proxy_group(&row)?);
+        }
+        Ok(items)
+    }
+
+    async fn find_proxy_group(
+        &self,
+        group_id: &str,
+    ) -> Result<Option<StoredProxyGroup>, DataLayerError> {
+        let mut builder = QueryBuilder::<Postgres>::new(PROXY_GROUP_COLUMNS_SQL);
+        let mut where_clause = WhereClause::new();
+        push_eq(&mut builder, &mut where_clause, "id", group_id.to_string());
+        push_limit(&mut builder, 1);
+        let row = builder
+            .build()
+            .fetch_optional(&self.pool)
+            .await
+            .map_postgres_err()?;
+        row.map(|row| Self::row_to_proxy_group(&row)).transpose()
+    }
+
+    async fn list_proxy_group_members(
+        &self,
+        group_id: &str,
+    ) -> Result<Vec<StoredProxyGroupMember>, DataLayerError> {
+        let mut builder = QueryBuilder::<Postgres>::new(PROXY_GROUP_MEMBER_COLUMNS_SQL);
+        let mut where_clause = WhereClause::new();
+        push_eq(
+            &mut builder,
+            &mut where_clause,
+            "group_id",
+            group_id.to_string(),
+        );
+        builder.push(" ORDER BY sort_index ASC, node_id ASC");
+        let mut rows = builder.build().fetch(&self.pool);
+        let mut items = Vec::new();
+        while let Some(row) = rows.try_next().await.map_postgres_err()? {
+            items.push(Self::row_to_proxy_group_member(&row)?);
+        }
+        Ok(items)
+    }
+
     async fn list_proxy_node_events(
         &self,
         node_id: &str,
@@ -1080,6 +1184,256 @@ impl ProxyNodeWriteRepository for SqlxProxyNodeRepository {
 
         tx.commit().await.map_err(postgres_error)?;
         self.find_proxy_node(&mutation.node_id).await
+    }
+
+    async fn create_proxy_group(
+        &self,
+        mutation: &ProxyGroupCreateMutation,
+    ) -> Result<StoredProxyGroup, DataLayerError> {
+        let group_id = uuid::Uuid::new_v4().to_string();
+        let enabled = mutation.enabled.unwrap_or(true);
+        let strategy = mutation
+            .strategy
+            .clone()
+            .unwrap_or_else(|| DEFAULT_PROXY_GROUP_STRATEGY.to_string());
+        let top_n = mutation.top_n.unwrap_or(3).max(1);
+        StoredProxyGroup::new(
+            group_id.clone(),
+            mutation.name.clone(),
+            enabled,
+            strategy.clone(),
+            top_n,
+        )?;
+        sqlx::query(
+            r#"
+INSERT INTO proxy_groups (id, name, description, enabled, strategy, top_n, created_at, updated_at)
+VALUES ($1, $2, $3, $4, $5, $6, NOW(), NOW())
+"#,
+        )
+        .bind(&group_id)
+        .bind(&mutation.name)
+        .bind(mutation.description.as_deref())
+        .bind(enabled)
+        .bind(&strategy)
+        .bind(top_n)
+        .execute(&self.pool)
+        .await
+        .map_postgres_err()?;
+        self.find_proxy_group(&group_id).await?.ok_or_else(|| {
+            DataLayerError::UnexpectedValue("created proxy group missing".to_string())
+        })
+    }
+
+    async fn update_proxy_group(
+        &self,
+        mutation: &ProxyGroupUpdateMutation,
+    ) -> Result<Option<StoredProxyGroup>, DataLayerError> {
+        let Some(mut group) = self.find_proxy_group(&mutation.group_id).await? else {
+            return Ok(None);
+        };
+        if let Some(name) = mutation.name.as_ref() {
+            if name.trim().is_empty() {
+                return Err(DataLayerError::InvalidInput(
+                    "proxy group name cannot be empty".to_string(),
+                ));
+            }
+            group.name = name.clone();
+        }
+        if let Some(description) = mutation.description.as_ref() {
+            group.description = description.clone();
+        }
+        if let Some(enabled) = mutation.enabled {
+            group.enabled = enabled;
+        }
+        if let Some(strategy) = mutation.strategy.as_ref() {
+            if strategy.trim().is_empty() {
+                return Err(DataLayerError::InvalidInput(
+                    "proxy group strategy cannot be empty".to_string(),
+                ));
+            }
+            group.strategy = strategy.clone();
+        }
+        if let Some(top_n) = mutation.top_n {
+            if top_n < 1 {
+                return Err(DataLayerError::InvalidInput(
+                    "proxy group top_n must be positive".to_string(),
+                ));
+            }
+            group.top_n = top_n;
+        }
+        sqlx::query(
+            r#"
+UPDATE proxy_groups
+SET name = $2,
+    description = $3,
+    enabled = $4,
+    strategy = $5,
+    top_n = $6,
+    updated_at = NOW()
+WHERE id = $1
+"#,
+        )
+        .bind(&mutation.group_id)
+        .bind(&group.name)
+        .bind(group.description.as_deref())
+        .bind(group.enabled)
+        .bind(&group.strategy)
+        .bind(group.top_n)
+        .execute(&self.pool)
+        .await
+        .map_postgres_err()?;
+        self.find_proxy_group(&mutation.group_id).await
+    }
+
+    async fn delete_proxy_group(
+        &self,
+        group_id: &str,
+    ) -> Result<Option<StoredProxyGroup>, DataLayerError> {
+        let existing = self.find_proxy_group(group_id).await?;
+        if existing.is_none() {
+            return Ok(None);
+        }
+        let mut tx = self.pool.begin().await.map_postgres_err()?;
+        sqlx::query("DELETE FROM proxy_group_members WHERE group_id = $1")
+            .bind(group_id)
+            .execute(&mut *tx)
+            .await
+            .map_postgres_err()?;
+        sqlx::query("DELETE FROM proxy_groups WHERE id = $1")
+            .bind(group_id)
+            .execute(&mut *tx)
+            .await
+            .map_postgres_err()?;
+        tx.commit().await.map_err(postgres_error)?;
+        Ok(existing)
+    }
+
+    async fn upsert_proxy_group_member(
+        &self,
+        mutation: &ProxyGroupMemberUpsertMutation,
+    ) -> Result<StoredProxyGroupMember, DataLayerError> {
+        if self.find_proxy_group(&mutation.group_id).await?.is_none() {
+            return Err(DataLayerError::InvalidInput(format!(
+                "proxy group not found: {}",
+                mutation.group_id
+            )));
+        }
+        if self.find_proxy_node(&mutation.node_id).await?.is_none() {
+            return Err(DataLayerError::InvalidInput(format!(
+                "proxy node not found: {}",
+                mutation.node_id
+            )));
+        }
+        if mutation
+            .manual_weight
+            .map(|value| !value.is_finite())
+            .unwrap_or(false)
+        {
+            return Err(DataLayerError::InvalidInput(
+                "proxy group member manual_weight must be finite".to_string(),
+            ));
+        }
+        sqlx::query(
+            r#"
+INSERT INTO proxy_group_members (
+  group_id, node_id, enabled, manual_weight, sort_index, created_at, updated_at
+)
+VALUES ($1, $2, $3, $4, $5, NOW(), NOW())
+ON CONFLICT (group_id, node_id) DO UPDATE SET
+  enabled = EXCLUDED.enabled,
+  manual_weight = EXCLUDED.manual_weight,
+  sort_index = EXCLUDED.sort_index,
+  updated_at = EXCLUDED.updated_at
+"#,
+        )
+        .bind(&mutation.group_id)
+        .bind(&mutation.node_id)
+        .bind(mutation.enabled.unwrap_or(true))
+        .bind(mutation.manual_weight.unwrap_or(1.0))
+        .bind(mutation.sort_index.unwrap_or(0))
+        .execute(&self.pool)
+        .await
+        .map_postgres_err()?;
+        self.list_proxy_group_members(&mutation.group_id)
+            .await?
+            .into_iter()
+            .find(|member| member.node_id == mutation.node_id)
+            .ok_or_else(|| {
+                DataLayerError::UnexpectedValue("upserted proxy group member missing".to_string())
+            })
+    }
+
+    async fn update_proxy_group_member(
+        &self,
+        mutation: &ProxyGroupMemberUpdateMutation,
+    ) -> Result<Option<StoredProxyGroupMember>, DataLayerError> {
+        let Some(mut member) = self
+            .list_proxy_group_members(&mutation.group_id)
+            .await?
+            .into_iter()
+            .find(|member| member.node_id == mutation.node_id)
+        else {
+            return Ok(None);
+        };
+        if let Some(enabled) = mutation.enabled {
+            member.enabled = enabled;
+        }
+        if let Some(manual_weight) = mutation.manual_weight {
+            if !manual_weight.is_finite() {
+                return Err(DataLayerError::InvalidInput(
+                    "proxy group member manual_weight must be finite".to_string(),
+                ));
+            }
+            member.manual_weight = manual_weight;
+        }
+        if let Some(sort_index) = mutation.sort_index {
+            member.sort_index = sort_index;
+        }
+        sqlx::query(
+            r#"
+UPDATE proxy_group_members
+SET enabled = $3,
+    manual_weight = $4,
+    sort_index = $5,
+    updated_at = NOW()
+WHERE group_id = $1 AND node_id = $2
+"#,
+        )
+        .bind(&mutation.group_id)
+        .bind(&mutation.node_id)
+        .bind(member.enabled)
+        .bind(member.manual_weight)
+        .bind(member.sort_index)
+        .execute(&self.pool)
+        .await
+        .map_postgres_err()?;
+        Ok(self
+            .list_proxy_group_members(&mutation.group_id)
+            .await?
+            .into_iter()
+            .find(|member| member.node_id == mutation.node_id))
+    }
+
+    async fn delete_proxy_group_member(
+        &self,
+        group_id: &str,
+        node_id: &str,
+    ) -> Result<Option<StoredProxyGroupMember>, DataLayerError> {
+        let existing = self
+            .list_proxy_group_members(group_id)
+            .await?
+            .into_iter()
+            .find(|member| member.node_id == node_id);
+        if existing.is_none() {
+            return Ok(None);
+        }
+        sqlx::query("DELETE FROM proxy_group_members WHERE group_id = $1 AND node_id = $2")
+            .bind(group_id)
+            .bind(node_id)
+            .execute(&self.pool)
+            .await
+            .map_postgres_err()?;
+        Ok(existing)
     }
 
     async fn register_node(
@@ -1402,11 +1756,18 @@ WHERE id = $1
             return Ok(None);
         };
 
-        sqlx::query(DELETE_PROXY_NODE_SQL)
+        let mut tx = self.pool.begin().await.map_postgres_err()?;
+        sqlx::query("DELETE FROM proxy_group_members WHERE node_id = $1")
             .bind(node_id)
-            .execute(&self.pool)
+            .execute(&mut *tx)
             .await
             .map_postgres_err()?;
+        sqlx::query(DELETE_PROXY_NODE_SQL)
+            .bind(node_id)
+            .execute(&mut *tx)
+            .await
+            .map_postgres_err()?;
+        tx.commit().await.map_err(postgres_error)?;
 
         Ok(Some(existing))
     }

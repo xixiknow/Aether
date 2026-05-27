@@ -148,6 +148,96 @@ export interface ProxyNodeListResponse {
   rollout: ProxyNodeUpgradeRolloutStatus | null
 }
 
+export interface ProxyGroupNodeSummary {
+  id: string
+  name: string
+  status: 'online' | 'offline' | string
+  region: string | null
+  is_manual: boolean
+  tunnel_mode: boolean
+  tunnel_connected: boolean
+  active_connections: number
+  estimated_max_concurrency: number | null
+  avg_latency_ms: number | null
+}
+
+export interface ProxyGroupMemberScore {
+  group_id: string
+  node_id: string
+  score: number
+  effective_score: number
+  hard_state: string
+  available: boolean
+  enabled: boolean
+  sort_index: number
+  score_reason: Record<string, unknown>
+  node?: ProxyGroupNodeSummary | null
+}
+
+export interface ProxyGroupMember {
+  group_id: string
+  node_id: string
+  enabled: boolean
+  manual_weight: number
+  sort_index: number
+  created_at: string | null
+  updated_at: string | null
+  node?: ProxyGroupNodeSummary | null
+  score?: number | null
+  effective_score?: number | null
+  hard_state?: string | null
+  available?: boolean
+  score_reason?: Record<string, unknown> | null
+}
+
+export interface ProxyGroup {
+  id: string
+  name: string
+  description: string | null
+  enabled: boolean
+  strategy: string
+  top_n: number
+  created_at: string | null
+  updated_at: string | null
+  member_count: number
+  available_member_count: number
+  current_best_member: {
+    node_id: string
+    score: number
+    effective_score: number
+    node?: ProxyGroupNodeSummary | null
+  } | null
+  recent_error_summary: string[]
+  members: ProxyGroupMember[]
+}
+
+export interface ProxyGroupListResponse {
+  items: ProxyGroup[]
+  total: number
+}
+
+export interface ProxyGroupCreateRequest {
+  name: string
+  description?: string | null
+  enabled?: boolean
+  strategy?: string
+  top_n?: number
+}
+
+export interface ProxyGroupUpdateRequest {
+  name?: string
+  description?: string | null
+  enabled?: boolean
+  strategy?: string
+  top_n?: number
+}
+
+export interface ProxyGroupMemberMutation {
+  enabled?: boolean
+  manual_weight?: number
+  sort_index?: number
+}
+
 export interface ManualProxyNodeCreateRequest {
   name: string
   proxy_url: string
@@ -246,6 +336,46 @@ export interface ProxyNodeUpgradeRolloutNodeActionResult {
 export const proxyNodesApi = {
   async listProxyNodes(params?: { status?: string; skip?: number; limit?: number }): Promise<ProxyNodeListResponse> {
     const response = await apiClient.get<ProxyNodeListResponse>('/api/admin/proxy-nodes', { params })
+    return response.data
+  },
+
+  async listProxyGroups(): Promise<ProxyGroupListResponse> {
+    const response = await apiClient.get<ProxyGroupListResponse>('/api/admin/proxy-groups')
+    return response.data
+  },
+
+  async createProxyGroup(data: ProxyGroupCreateRequest): Promise<{ group_id: string; group: ProxyGroup }> {
+    const response = await apiClient.post<{ group_id: string; group: ProxyGroup }>('/api/admin/proxy-groups', data)
+    return response.data
+  },
+
+  async updateProxyGroup(groupId: string, data: ProxyGroupUpdateRequest): Promise<{ group_id: string; group: ProxyGroup }> {
+    const response = await apiClient.patch<{ group_id: string; group: ProxyGroup }>(`/api/admin/proxy-groups/${groupId}`, data)
+    return response.data
+  },
+
+  async deleteProxyGroup(groupId: string): Promise<{ message: string; group_id: string }> {
+    const response = await apiClient.delete<{ message: string; group_id: string }>(`/api/admin/proxy-groups/${groupId}`)
+    return response.data
+  },
+
+  async upsertProxyGroupMember(groupId: string, nodeId: string, data: ProxyGroupMemberMutation): Promise<{ member: ProxyGroupMember }> {
+    const response = await apiClient.post<{ member: ProxyGroupMember }>(`/api/admin/proxy-groups/${groupId}/members/${nodeId}`, data)
+    return response.data
+  },
+
+  async updateProxyGroupMember(groupId: string, nodeId: string, data: ProxyGroupMemberMutation): Promise<{ member: ProxyGroupMember }> {
+    const response = await apiClient.patch<{ member: ProxyGroupMember }>(`/api/admin/proxy-groups/${groupId}/members/${nodeId}`, data)
+    return response.data
+  },
+
+  async deleteProxyGroupMember(groupId: string, nodeId: string): Promise<{ message: string; group_id: string; node_id: string }> {
+    const response = await apiClient.delete<{ message: string; group_id: string; node_id: string }>(`/api/admin/proxy-groups/${groupId}/members/${nodeId}`)
+    return response.data
+  },
+
+  async listProxyGroupScores(groupId: string): Promise<{ group_id: string; items: ProxyGroupMemberScore[]; total: number }> {
+    const response = await apiClient.get<{ group_id: string; items: ProxyGroupMemberScore[]; total: number }>(`/api/admin/proxy-groups/${groupId}/scores`)
     return response.data
   },
 

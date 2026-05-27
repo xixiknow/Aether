@@ -5,10 +5,12 @@ use std::sync::Mutex as StdMutex;
 use std::time::Duration;
 
 use aether_data::repository::proxy_nodes::{
-    ProxyNodeEventQuery, ProxyNodeHeartbeatMutation, ProxyNodeManualCreateMutation,
-    ProxyNodeManualUpdateMutation, ProxyNodeMetricsStep, ProxyNodeTrafficMutation,
-    ProxyNodeTunnelStatusMutation, StoredProxyFleetMetricsBucket, StoredProxyNode,
-    StoredProxyNodeEvent, StoredProxyNodeMetricsBucket,
+    ProxyGroupCreateMutation, ProxyGroupMemberUpdateMutation, ProxyGroupMemberUpsertMutation,
+    ProxyGroupUpdateMutation, ProxyNodeEventQuery, ProxyNodeHeartbeatMutation,
+    ProxyNodeManualCreateMutation, ProxyNodeManualUpdateMutation, ProxyNodeMetricsStep,
+    ProxyNodeTrafficMutation, ProxyNodeTunnelStatusMutation, StoredProxyFleetMetricsBucket,
+    StoredProxyGroup, StoredProxyGroupMember, StoredProxyNode, StoredProxyNodeEvent,
+    StoredProxyNodeMetricsBucket,
 };
 use aether_http::{build_http_client, HttpClientConfig};
 use aether_runtime::{
@@ -694,6 +696,33 @@ impl AppState {
             .map_err(|err| GatewayError::Internal(err.to_string()))
     }
 
+    pub(crate) async fn list_proxy_groups(&self) -> Result<Vec<StoredProxyGroup>, GatewayError> {
+        self.data
+            .list_proxy_groups()
+            .await
+            .map_err(|err| GatewayError::Internal(err.to_string()))
+    }
+
+    pub(crate) async fn find_proxy_group(
+        &self,
+        group_id: &str,
+    ) -> Result<Option<StoredProxyGroup>, GatewayError> {
+        self.data
+            .find_proxy_group(group_id)
+            .await
+            .map_err(|err| GatewayError::Internal(err.to_string()))
+    }
+
+    pub(crate) async fn list_proxy_group_members(
+        &self,
+        group_id: &str,
+    ) -> Result<Vec<StoredProxyGroupMember>, GatewayError> {
+        self.data
+            .list_proxy_group_members(group_id)
+            .await
+            .map_err(|err| GatewayError::Internal(err.to_string()))
+    }
+
     pub(crate) async fn list_proxy_node_events(
         &self,
         node_id: &str,
@@ -773,6 +802,67 @@ impl AppState {
             .map_err(|err| GatewayError::Internal(err.to_string()))
     }
 
+    pub(crate) async fn create_proxy_group(
+        &self,
+        mutation: &ProxyGroupCreateMutation,
+    ) -> Result<Option<StoredProxyGroup>, GatewayError> {
+        self.data
+            .create_proxy_group(mutation)
+            .await
+            .map_err(|err| GatewayError::Internal(err.to_string()))
+    }
+
+    pub(crate) async fn update_proxy_group(
+        &self,
+        mutation: &ProxyGroupUpdateMutation,
+    ) -> Result<Option<StoredProxyGroup>, GatewayError> {
+        self.data
+            .update_proxy_group(mutation)
+            .await
+            .map_err(|err| GatewayError::Internal(err.to_string()))
+    }
+
+    pub(crate) async fn delete_proxy_group(
+        &self,
+        group_id: &str,
+    ) -> Result<Option<StoredProxyGroup>, GatewayError> {
+        self.data
+            .delete_proxy_group(group_id)
+            .await
+            .map_err(|err| GatewayError::Internal(err.to_string()))
+    }
+
+    pub(crate) async fn upsert_proxy_group_member(
+        &self,
+        mutation: &ProxyGroupMemberUpsertMutation,
+    ) -> Result<Option<StoredProxyGroupMember>, GatewayError> {
+        self.data
+            .upsert_proxy_group_member(mutation)
+            .await
+            .map_err(|err| GatewayError::Internal(err.to_string()))
+    }
+
+    pub(crate) async fn update_proxy_group_member(
+        &self,
+        mutation: &ProxyGroupMemberUpdateMutation,
+    ) -> Result<Option<StoredProxyGroupMember>, GatewayError> {
+        self.data
+            .update_proxy_group_member(mutation)
+            .await
+            .map_err(|err| GatewayError::Internal(err.to_string()))
+    }
+
+    pub(crate) async fn delete_proxy_group_member(
+        &self,
+        group_id: &str,
+        node_id: &str,
+    ) -> Result<Option<StoredProxyGroupMember>, GatewayError> {
+        self.data
+            .delete_proxy_group_member(group_id, node_id)
+            .await
+            .map_err(|err| GatewayError::Internal(err.to_string()))
+    }
+
     pub async fn reset_stale_proxy_node_tunnel_statuses(&self) -> std::io::Result<usize> {
         self.data
             .reset_stale_proxy_node_tunnel_statuses()
@@ -831,6 +921,24 @@ impl AppState {
         &self,
         node_id: &str,
     ) -> Result<Option<StoredProxyNode>, GatewayError> {
+        if self.data.has_pool_score_writer() {
+            for group in self
+                .data
+                .list_proxy_groups()
+                .await
+                .map_err(|err| GatewayError::Internal(err.to_string()))?
+            {
+                let identity =
+                    aether_data_contracts::repository::pool_scores::PoolMemberIdentity::proxy_group_member(
+                        group.id,
+                        node_id.to_string(),
+                    );
+                self.data
+                    .delete_pool_member_scores_for_member(&identity)
+                    .await
+                    .map_err(|err| GatewayError::Internal(err.to_string()))?;
+            }
+        }
         self.data
             .delete_proxy_node(node_id)
             .await

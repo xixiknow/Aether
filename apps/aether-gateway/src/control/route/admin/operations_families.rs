@@ -230,6 +230,122 @@ pub(super) fn classify_admin_operations_family_route(
     } else if method == http::Method::GET
         && matches!(
             normalized_path,
+            "/api/admin/proxy-groups" | "/api/admin/proxy-groups/"
+        )
+    {
+        Some(classified(
+            "admin_proxy",
+            "proxy_nodes_manage",
+            "list_proxy_groups",
+            "admin:proxy_nodes",
+            false,
+        ))
+    } else if method == http::Method::POST
+        && matches!(
+            normalized_path,
+            "/api/admin/proxy-groups" | "/api/admin/proxy-groups/"
+        )
+    {
+        Some(classified(
+            "admin_proxy",
+            "proxy_nodes_manage",
+            "create_proxy_group",
+            "admin:proxy_nodes",
+            false,
+        ))
+    } else if method == http::Method::GET
+        && normalized_path_no_trailing.starts_with("/api/admin/proxy-groups/")
+        && normalized_path_no_trailing.ends_with("/scores")
+        && normalized_path_no_trailing.matches('/').count() == 5
+    {
+        Some(classified(
+            "admin_proxy",
+            "proxy_nodes_manage",
+            "list_proxy_group_scores",
+            "admin:proxy_nodes",
+            false,
+        ))
+    } else if method == http::Method::POST
+        && normalized_path_no_trailing.starts_with("/api/admin/proxy-groups/")
+        && normalized_path_no_trailing.contains("/members/")
+        && normalized_path_no_trailing.matches('/').count() == 6
+    {
+        Some(classified(
+            "admin_proxy",
+            "proxy_nodes_manage",
+            "upsert_proxy_group_member",
+            "admin:proxy_nodes",
+            false,
+        ))
+    } else if method == http::Method::PATCH
+        && normalized_path_no_trailing.starts_with("/api/admin/proxy-groups/")
+        && normalized_path_no_trailing.contains("/members/")
+        && normalized_path_no_trailing.matches('/').count() == 6
+    {
+        Some(classified(
+            "admin_proxy",
+            "proxy_nodes_manage",
+            "update_proxy_group_member",
+            "admin:proxy_nodes",
+            false,
+        ))
+    } else if method == http::Method::DELETE
+        && normalized_path_no_trailing.starts_with("/api/admin/proxy-groups/")
+        && normalized_path_no_trailing.contains("/members/")
+        && normalized_path_no_trailing.matches('/').count() == 6
+    {
+        Some(classified(
+            "admin_proxy",
+            "proxy_nodes_manage",
+            "delete_proxy_group_member",
+            "admin:proxy_nodes",
+            false,
+        ))
+    } else if method == http::Method::GET
+        && normalized_path_no_trailing.starts_with("/api/admin/proxy-groups/")
+        && normalized_path_no_trailing["/api/admin/proxy-groups/".len()..]
+            .split('/')
+            .count()
+            == 1
+    {
+        Some(classified(
+            "admin_proxy",
+            "proxy_nodes_manage",
+            "get_proxy_group",
+            "admin:proxy_nodes",
+            false,
+        ))
+    } else if method == http::Method::PATCH
+        && normalized_path_no_trailing.starts_with("/api/admin/proxy-groups/")
+        && normalized_path_no_trailing["/api/admin/proxy-groups/".len()..]
+            .split('/')
+            .count()
+            == 1
+    {
+        Some(classified(
+            "admin_proxy",
+            "proxy_nodes_manage",
+            "update_proxy_group",
+            "admin:proxy_nodes",
+            false,
+        ))
+    } else if method == http::Method::DELETE
+        && normalized_path_no_trailing.starts_with("/api/admin/proxy-groups/")
+        && normalized_path_no_trailing["/api/admin/proxy-groups/".len()..]
+            .split('/')
+            .count()
+            == 1
+    {
+        Some(classified(
+            "admin_proxy",
+            "proxy_nodes_manage",
+            "delete_proxy_group",
+            "admin:proxy_nodes",
+            false,
+        ))
+    } else if method == http::Method::GET
+        && matches!(
+            normalized_path,
             "/api/admin/proxy-nodes" | "/api/admin/proxy-nodes/"
         )
     {

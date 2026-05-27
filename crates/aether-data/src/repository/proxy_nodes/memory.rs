@@ -10,18 +10,22 @@ use super::types::{
     bucket_start_unix_secs, build_tunnel_error_event_detail, build_tunnel_metrics_sample,
     log_reported_tunnel_error_event, normalize_proxy_metadata,
     preserve_proxy_metadata_tunnel_security, reconcile_remote_config_after_heartbeat,
-    ProxyNodeEventQuery, ProxyNodeHeartbeatMutation, ProxyNodeManualCreateMutation,
-    ProxyNodeManualUpdateMutation, ProxyNodeMetricsCleanupSummary, ProxyNodeMetricsStep,
-    ProxyNodeReadRepository, ProxyNodeRegistrationMutation, ProxyNodeRemoteConfigMutation,
-    ProxyNodeTrafficMutation, ProxyNodeTunnelStatusMutation, ProxyNodeWriteRepository,
-    StoredProxyFleetMetricsBucket, StoredProxyNode, StoredProxyNodeEvent,
-    StoredProxyNodeMetricsBucket, TunnelMetricsSample, PROXY_NODE_EVENT_TYPE_TUNNEL_ERROR,
+    ProxyGroupCreateMutation, ProxyGroupMemberUpdateMutation, ProxyGroupMemberUpsertMutation,
+    ProxyGroupUpdateMutation, ProxyNodeEventQuery, ProxyNodeHeartbeatMutation,
+    ProxyNodeManualCreateMutation, ProxyNodeManualUpdateMutation, ProxyNodeMetricsCleanupSummary,
+    ProxyNodeMetricsStep, ProxyNodeReadRepository, ProxyNodeRegistrationMutation,
+    ProxyNodeRemoteConfigMutation, ProxyNodeTrafficMutation, ProxyNodeTunnelStatusMutation,
+    ProxyNodeWriteRepository, StoredProxyFleetMetricsBucket, StoredProxyGroup,
+    StoredProxyGroupMember, StoredProxyNode, StoredProxyNodeEvent, StoredProxyNodeMetricsBucket,
+    TunnelMetricsSample, DEFAULT_PROXY_GROUP_STRATEGY, PROXY_NODE_EVENT_TYPE_TUNNEL_ERROR,
 };
 use crate::DataLayerError;
 
 #[derive(Debug, Default)]
 pub struct InMemoryProxyNodeRepository {
     nodes: RwLock<BTreeMap<String, StoredProxyNode>>,
+    proxy_groups: RwLock<BTreeMap<String, StoredProxyGroup>>,
+    proxy_group_members: RwLock<BTreeMap<(String, String), StoredProxyGroupMember>>,
     events: RwLock<Vec<StoredProxyNodeEvent>>,
     metrics_1m: RwLock<BTreeMap<(String, u64), StoredProxyNodeMetricsBucket>>,
     metrics_1h: RwLock<BTreeMap<(String, u64), StoredProxyNodeMetricsBucket>>,
@@ -39,6 +43,8 @@ impl InMemoryProxyNodeRepository {
                     .map(|node| (node.id.clone(), node))
                     .collect(),
             ),
+            proxy_groups: RwLock::new(BTreeMap::new()),
+            proxy_group_members: RwLock::new(BTreeMap::new()),
             events: RwLock::new(Vec::new()),
             metrics_1m: RwLock::new(BTreeMap::new()),
             metrics_1h: RwLock::new(BTreeMap::new()),
@@ -57,7 +63,40 @@ impl InMemoryProxyNodeRepository {
                     .map(|node| (node.id.clone(), node))
                     .collect(),
             ),
+            proxy_groups: RwLock::new(BTreeMap::new()),
+            proxy_group_members: RwLock::new(BTreeMap::new()),
             events: RwLock::new(events.into_iter().collect()),
+            metrics_1m: RwLock::new(BTreeMap::new()),
+            metrics_1h: RwLock::new(BTreeMap::new()),
+        }
+    }
+
+    pub fn seed_with_proxy_groups<I, J, K>(nodes: I, groups: J, members: K) -> Self
+    where
+        I: IntoIterator<Item = StoredProxyNode>,
+        J: IntoIterator<Item = StoredProxyGroup>,
+        K: IntoIterator<Item = StoredProxyGroupMember>,
+    {
+        Self {
+            nodes: RwLock::new(
+                nodes
+                    .into_iter()
+                    .map(|node| (node.id.clone(), node))
+                    .collect(),
+            ),
+            proxy_groups: RwLock::new(
+                groups
+                    .into_iter()
+                    .map(|group| (group.id.clone(), group))
+                    .collect(),
+            ),
+            proxy_group_members: RwLock::new(
+                members
+                    .into_iter()
+                    .map(|member| ((member.group_id.clone(), member.node_id.clone()), member))
+                    .collect(),
+            ),
+            events: RwLock::new(Vec::new()),
             metrics_1m: RwLock::new(BTreeMap::new()),
             metrics_1h: RwLock::new(BTreeMap::new()),
         }
@@ -186,6 +225,48 @@ impl ProxyNodeReadRepository for InMemoryProxyNodeRepository {
     ) -> Result<Option<StoredProxyNode>, DataLayerError> {
         let nodes = self.nodes.read().expect("proxy node repository lock");
         Ok(nodes.get(node_id).cloned())
+    }
+
+    async fn list_proxy_groups(&self) -> Result<Vec<StoredProxyGroup>, DataLayerError> {
+        let groups = self
+            .proxy_groups
+            .read()
+            .expect("proxy group repository lock");
+        let mut items = groups.values().cloned().collect::<Vec<_>>();
+        items.sort_by(|left, right| left.name.cmp(&right.name).then(left.id.cmp(&right.id)));
+        Ok(items)
+    }
+
+    async fn find_proxy_group(
+        &self,
+        group_id: &str,
+    ) -> Result<Option<StoredProxyGroup>, DataLayerError> {
+        let groups = self
+            .proxy_groups
+            .read()
+            .expect("proxy group repository lock");
+        Ok(groups.get(group_id).cloned())
+    }
+
+    async fn list_proxy_group_members(
+        &self,
+        group_id: &str,
+    ) -> Result<Vec<StoredProxyGroupMember>, DataLayerError> {
+        let members = self
+            .proxy_group_members
+            .read()
+            .expect("proxy group member repository lock");
+        let mut items = members
+            .values()
+            .filter(|member| member.group_id == group_id)
+            .cloned()
+            .collect::<Vec<_>>();
+        items.sort_by(|left, right| {
+            left.sort_index
+                .cmp(&right.sort_index)
+                .then(left.node_id.cmp(&right.node_id))
+        });
+        Ok(items)
     }
 
     async fn list_proxy_node_events(
@@ -458,6 +539,200 @@ impl ProxyNodeWriteRepository for InMemoryProxyNodeRepository {
         }
         node.updated_at_unix_secs = Self::now_unix_secs();
         Ok(Some(node.clone()))
+    }
+
+    async fn create_proxy_group(
+        &self,
+        mutation: &ProxyGroupCreateMutation,
+    ) -> Result<StoredProxyGroup, DataLayerError> {
+        let now = Self::now_unix_secs();
+        let group = StoredProxyGroup::new(
+            Uuid::new_v4().to_string(),
+            mutation.name.clone(),
+            mutation.enabled.unwrap_or(true),
+            mutation
+                .strategy
+                .clone()
+                .unwrap_or_else(|| DEFAULT_PROXY_GROUP_STRATEGY.to_string()),
+            mutation.top_n.unwrap_or(3).max(1),
+        )?
+        .with_description(mutation.description.clone())
+        .with_timestamps(now, now);
+
+        self.proxy_groups
+            .write()
+            .expect("proxy group repository lock")
+            .insert(group.id.clone(), group.clone());
+        Ok(group)
+    }
+
+    async fn update_proxy_group(
+        &self,
+        mutation: &ProxyGroupUpdateMutation,
+    ) -> Result<Option<StoredProxyGroup>, DataLayerError> {
+        let mut groups = self
+            .proxy_groups
+            .write()
+            .expect("proxy group repository lock");
+        let Some(group) = groups.get_mut(&mutation.group_id) else {
+            return Ok(None);
+        };
+        if let Some(name) = mutation.name.as_ref() {
+            if name.trim().is_empty() {
+                return Err(DataLayerError::InvalidInput(
+                    "proxy group name cannot be empty".to_string(),
+                ));
+            }
+            group.name = name.clone();
+        }
+        if let Some(description) = mutation.description.as_ref() {
+            group.description = description.clone();
+        }
+        if let Some(enabled) = mutation.enabled {
+            group.enabled = enabled;
+        }
+        if let Some(strategy) = mutation.strategy.as_ref() {
+            if strategy.trim().is_empty() {
+                return Err(DataLayerError::InvalidInput(
+                    "proxy group strategy cannot be empty".to_string(),
+                ));
+            }
+            group.strategy = strategy.clone();
+        }
+        if let Some(top_n) = mutation.top_n {
+            if top_n < 1 {
+                return Err(DataLayerError::InvalidInput(
+                    "proxy group top_n must be positive".to_string(),
+                ));
+            }
+            group.top_n = top_n;
+        }
+        group.updated_at_unix_secs = Self::now_unix_secs();
+        Ok(Some(group.clone()))
+    }
+
+    async fn delete_proxy_group(
+        &self,
+        group_id: &str,
+    ) -> Result<Option<StoredProxyGroup>, DataLayerError> {
+        let removed = self
+            .proxy_groups
+            .write()
+            .expect("proxy group repository lock")
+            .remove(group_id);
+        if removed.is_some() {
+            self.proxy_group_members
+                .write()
+                .expect("proxy group member repository lock")
+                .retain(|(member_group_id, _), _| member_group_id != group_id);
+        }
+        Ok(removed)
+    }
+
+    async fn upsert_proxy_group_member(
+        &self,
+        mutation: &ProxyGroupMemberUpsertMutation,
+    ) -> Result<StoredProxyGroupMember, DataLayerError> {
+        if !self
+            .proxy_groups
+            .read()
+            .expect("proxy group repository lock")
+            .contains_key(&mutation.group_id)
+        {
+            return Err(DataLayerError::InvalidInput(format!(
+                "proxy group not found: {}",
+                mutation.group_id
+            )));
+        }
+        if !self
+            .nodes
+            .read()
+            .expect("proxy node repository lock")
+            .contains_key(&mutation.node_id)
+        {
+            return Err(DataLayerError::InvalidInput(format!(
+                "proxy node not found: {}",
+                mutation.node_id
+            )));
+        }
+
+        let now = Self::now_unix_secs();
+        let mut members = self
+            .proxy_group_members
+            .write()
+            .expect("proxy group member repository lock");
+        let key = (mutation.group_id.clone(), mutation.node_id.clone());
+        if let Some(member) = members.get_mut(&key) {
+            if let Some(enabled) = mutation.enabled {
+                member.enabled = enabled;
+            }
+            if let Some(manual_weight) = mutation.manual_weight {
+                if !manual_weight.is_finite() {
+                    return Err(DataLayerError::InvalidInput(
+                        "proxy group member manual_weight must be finite".to_string(),
+                    ));
+                }
+                member.manual_weight = manual_weight;
+            }
+            if let Some(sort_index) = mutation.sort_index {
+                member.sort_index = sort_index;
+            }
+            member.updated_at_unix_secs = now;
+            return Ok(member.clone());
+        }
+
+        let member = StoredProxyGroupMember::new(
+            mutation.group_id.clone(),
+            mutation.node_id.clone(),
+            mutation.enabled.unwrap_or(true),
+            mutation.manual_weight.unwrap_or(1.0),
+            mutation.sort_index.unwrap_or(0),
+        )?
+        .with_timestamps(now, now);
+        members.insert(key, member.clone());
+        Ok(member)
+    }
+
+    async fn update_proxy_group_member(
+        &self,
+        mutation: &ProxyGroupMemberUpdateMutation,
+    ) -> Result<Option<StoredProxyGroupMember>, DataLayerError> {
+        let mut members = self
+            .proxy_group_members
+            .write()
+            .expect("proxy group member repository lock");
+        let key = (mutation.group_id.clone(), mutation.node_id.clone());
+        let Some(member) = members.get_mut(&key) else {
+            return Ok(None);
+        };
+        if let Some(enabled) = mutation.enabled {
+            member.enabled = enabled;
+        }
+        if let Some(manual_weight) = mutation.manual_weight {
+            if !manual_weight.is_finite() {
+                return Err(DataLayerError::InvalidInput(
+                    "proxy group member manual_weight must be finite".to_string(),
+                ));
+            }
+            member.manual_weight = manual_weight;
+        }
+        if let Some(sort_index) = mutation.sort_index {
+            member.sort_index = sort_index;
+        }
+        member.updated_at_unix_secs = Self::now_unix_secs();
+        Ok(Some(member.clone()))
+    }
+
+    async fn delete_proxy_group_member(
+        &self,
+        group_id: &str,
+        node_id: &str,
+    ) -> Result<Option<StoredProxyGroupMember>, DataLayerError> {
+        Ok(self
+            .proxy_group_members
+            .write()
+            .expect("proxy group member repository lock")
+            .remove(&(group_id.to_string(), node_id.to_string())))
     }
 
     async fn register_node(
@@ -782,6 +1057,10 @@ impl ProxyNodeWriteRepository for InMemoryProxyNodeRepository {
             .expect("proxy node repository lock")
             .remove(node_id);
         if removed.is_some() {
+            self.proxy_group_members
+                .write()
+                .expect("proxy group member repository lock")
+                .retain(|(_, member_node_id), _| member_node_id != node_id);
             self.events
                 .write()
                 .expect("proxy node repository lock")
@@ -890,16 +1169,22 @@ impl ProxyNodeWriteRepository for InMemoryProxyNodeRepository {
 mod tests {
     use super::InMemoryProxyNodeRepository;
     use crate::repository::proxy_nodes::{
-        ProxyNodeHeartbeatMutation, ProxyNodeReadRepository, ProxyNodeRegistrationMutation,
-        ProxyNodeRemoteConfigMutation, ProxyNodeTunnelStatusMutation, ProxyNodeWriteRepository,
-        StoredProxyNode, StoredProxyNodeEvent,
+        ProxyGroupCreateMutation, ProxyGroupMemberUpdateMutation, ProxyGroupMemberUpsertMutation,
+        ProxyGroupUpdateMutation, ProxyNodeHeartbeatMutation, ProxyNodeReadRepository,
+        ProxyNodeRegistrationMutation, ProxyNodeRemoteConfigMutation,
+        ProxyNodeTunnelStatusMutation, ProxyNodeWriteRepository, StoredProxyGroup,
+        StoredProxyGroupMember, StoredProxyNode, StoredProxyNodeEvent,
     };
     use serde_json::json;
 
     fn sample_node() -> StoredProxyNode {
+        sample_node_with_id("node-1")
+    }
+
+    fn sample_node_with_id(id: &str) -> StoredProxyNode {
         StoredProxyNode::new(
-            "node-1".to_string(),
-            "proxy-1".to_string(),
+            id.to_string(),
+            id.to_string(),
             "127.0.0.1".to_string(),
             0,
             false,
@@ -928,6 +1213,22 @@ mod tests {
             Some(1_700_000_000),
             Some(1_700_000_001),
         )
+    }
+
+    fn sample_group(id: &str) -> StoredProxyGroup {
+        StoredProxyGroup::new(
+            id.to_string(),
+            id.to_string(),
+            true,
+            "balanced_weighted".to_string(),
+            3,
+        )
+        .expect("proxy group should build")
+    }
+
+    fn sample_group_member(group_id: &str, node_id: &str) -> StoredProxyGroupMember {
+        StoredProxyGroupMember::new(group_id.to_string(), node_id.to_string(), true, 1.0, 0)
+            .expect("proxy group member should build")
     }
 
     #[tokio::test]
@@ -1187,5 +1488,121 @@ mod tests {
             .expect("node should exist");
         assert_eq!(unregistered.status, "offline");
         assert!(!unregistered.tunnel_connected);
+    }
+
+    #[tokio::test]
+    async fn creates_updates_and_deletes_proxy_groups_and_members() {
+        let repository = InMemoryProxyNodeRepository::seed(vec![sample_node()]);
+
+        let group = repository
+            .create_proxy_group(&ProxyGroupCreateMutation {
+                name: "group-a".to_string(),
+                description: Some("primary".to_string()),
+                enabled: Some(true),
+                strategy: None,
+                top_n: None,
+            })
+            .await
+            .expect("group create should succeed");
+        assert_eq!(group.name, "group-a");
+        assert_eq!(group.strategy, "balanced_weighted");
+        assert_eq!(group.top_n, 3);
+
+        let updated = repository
+            .update_proxy_group(&ProxyGroupUpdateMutation {
+                group_id: group.id.clone(),
+                name: Some("group-b".to_string()),
+                description: Some(None),
+                enabled: Some(false),
+                strategy: Some("success_rate".to_string()),
+                top_n: Some(5),
+            })
+            .await
+            .expect("group update should succeed")
+            .expect("group should exist");
+        assert_eq!(updated.name, "group-b");
+        assert_eq!(updated.description, None);
+        assert!(!updated.enabled);
+        assert_eq!(updated.strategy, "success_rate");
+        assert_eq!(updated.top_n, 5);
+
+        let member = repository
+            .upsert_proxy_group_member(&ProxyGroupMemberUpsertMutation {
+                group_id: group.id.clone(),
+                node_id: "node-1".to_string(),
+                enabled: Some(true),
+                manual_weight: Some(1.25),
+                sort_index: Some(7),
+            })
+            .await
+            .expect("member upsert should succeed");
+        assert_eq!(member.node_id, "node-1");
+        assert_eq!(member.manual_weight, 1.25);
+        assert_eq!(member.sort_index, 7);
+
+        let updated_member = repository
+            .update_proxy_group_member(&ProxyGroupMemberUpdateMutation {
+                group_id: group.id.clone(),
+                node_id: "node-1".to_string(),
+                enabled: Some(false),
+                manual_weight: Some(0.5),
+                sort_index: Some(1),
+            })
+            .await
+            .expect("member update should succeed")
+            .expect("member should exist");
+        assert!(!updated_member.enabled);
+        assert_eq!(updated_member.manual_weight, 0.5);
+        assert_eq!(updated_member.sort_index, 1);
+
+        let deleted_member = repository
+            .delete_proxy_group_member(&group.id, "node-1")
+            .await
+            .expect("member delete should succeed")
+            .expect("member should exist");
+        assert_eq!(deleted_member.node_id, "node-1");
+        assert!(repository
+            .list_proxy_group_members(&group.id)
+            .await
+            .expect("members should list")
+            .is_empty());
+
+        let deleted_group = repository
+            .delete_proxy_group(&group.id)
+            .await
+            .expect("group delete should succeed")
+            .expect("group should exist");
+        assert_eq!(deleted_group.id, group.id);
+        assert!(repository
+            .find_proxy_group(&deleted_group.id)
+            .await
+            .expect("group lookup should succeed")
+            .is_none());
+    }
+
+    #[tokio::test]
+    async fn deleting_proxy_node_removes_proxy_group_memberships() {
+        let repository = InMemoryProxyNodeRepository::seed_with_proxy_groups(
+            vec![sample_node_with_id("node-1"), sample_node_with_id("node-2")],
+            vec![sample_group("group-1")],
+            vec![
+                sample_group_member("group-1", "node-1"),
+                sample_group_member("group-1", "node-2"),
+            ],
+        );
+
+        let deleted = repository
+            .delete_node("node-1")
+            .await
+            .expect("node delete should succeed")
+            .expect("node should exist");
+        assert_eq!(deleted.id, "node-1");
+
+        let remaining_members = repository
+            .list_proxy_group_members("group-1")
+            .await
+            .expect("members should list");
+        assert_eq!(remaining_members.len(), 1);
+        assert_eq!(remaining_members[0].node_id, "node-2");
     }
 }

@@ -112,6 +112,54 @@ async fn gateway_handles_admin_proxy_nodes_locally_with_trusted_admin_principal(
 }
 
 #[tokio::test]
+async fn gateway_returns_data_unavailable_for_proxy_group_reads_without_reader() {
+    let gateway = build_router_with_state(AppState::new().expect("gateway should build"));
+    let (gateway_url, gateway_handle) = start_server(gateway).await;
+
+    let response = reqwest::Client::new()
+        .get(format!("{gateway_url}/api/admin/proxy-groups"))
+        .header(crate::constants::GATEWAY_HEADER, "rust-phase3b")
+        .header(TRUSTED_ADMIN_USER_ID_HEADER, "admin-user-123")
+        .header(TRUSTED_ADMIN_USER_ROLE_HEADER, "admin")
+        .header(TRUSTED_ADMIN_SESSION_ID_HEADER, "session-123")
+        .send()
+        .await
+        .expect("request should succeed");
+
+    assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+    let payload: serde_json::Value = response.json().await.expect("json body should parse");
+    assert_eq!(payload["detail"], "Admin proxy nodes data unavailable");
+
+    gateway_handle.abort();
+}
+
+#[tokio::test]
+async fn gateway_returns_data_unavailable_for_proxy_group_writes_without_writer() {
+    let gateway = build_router_with_state(AppState::new().expect("gateway should build"));
+    let (gateway_url, gateway_handle) = start_server(gateway).await;
+
+    let response = reqwest::Client::new()
+        .post(format!("{gateway_url}/api/admin/proxy-groups"))
+        .header(crate::constants::GATEWAY_HEADER, "rust-phase3b")
+        .header(TRUSTED_ADMIN_USER_ID_HEADER, "admin-user-123")
+        .header(TRUSTED_ADMIN_USER_ROLE_HEADER, "admin")
+        .header(TRUSTED_ADMIN_SESSION_ID_HEADER, "session-123")
+        .json(&json!({
+            "name": "group-a",
+            "enabled": true,
+        }))
+        .send()
+        .await
+        .expect("request should succeed");
+
+    assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+    let payload: serde_json::Value = response.json().await.expect("json body should parse");
+    assert_eq!(payload["detail"], "Admin proxy nodes data unavailable");
+
+    gateway_handle.abort();
+}
+
+#[tokio::test]
 async fn gateway_returns_full_manual_proxy_node_detail_locally_with_trusted_admin_principal() {
     let mut manual_node = sample_proxy_node("proxy-node-manual");
     manual_node.name = "alpha-manual".to_string();

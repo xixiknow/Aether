@@ -1,12 +1,14 @@
 use super::{
     AuthApiKeyLookupKey, CreateManagementTokenRecord, DataLayerError, GatewayAuthApiKeySnapshot,
-    GatewayDataState, ManagementTokenCounterDelta, ManagementTokenListQuery, ProxyNodeCounterDelta,
-    ProxyNodeHeartbeatMutation, ProxyNodeManualCreateMutation, ProxyNodeManualUpdateMutation,
-    ProxyNodeRegistrationMutation, ProxyNodeRemoteConfigMutation, ProxyNodeTrafficMutation,
-    ProxyNodeTunnelStatusMutation, RegenerateManagementTokenSecret, StoredAuthApiKeyExportRecord,
-    StoredAuthApiKeySnapshot, StoredLdapModuleConfig, StoredManagementToken,
-    StoredManagementTokenListPage, StoredManagementTokenWithUser, StoredOAuthProviderConfig,
-    StoredOAuthProviderModuleConfig, StoredProxyFleetMetricsBucket, StoredProxyNode,
+    GatewayDataState, ManagementTokenCounterDelta, ManagementTokenListQuery,
+    ProxyGroupCreateMutation, ProxyGroupMemberUpdateMutation, ProxyGroupMemberUpsertMutation,
+    ProxyGroupUpdateMutation, ProxyNodeCounterDelta, ProxyNodeHeartbeatMutation,
+    ProxyNodeManualCreateMutation, ProxyNodeManualUpdateMutation, ProxyNodeRegistrationMutation,
+    ProxyNodeRemoteConfigMutation, ProxyNodeTrafficMutation, ProxyNodeTunnelStatusMutation,
+    RegenerateManagementTokenSecret, StoredAuthApiKeyExportRecord, StoredAuthApiKeySnapshot,
+    StoredLdapModuleConfig, StoredManagementToken, StoredManagementTokenListPage,
+    StoredManagementTokenWithUser, StoredOAuthProviderConfig, StoredOAuthProviderModuleConfig,
+    StoredProxyFleetMetricsBucket, StoredProxyGroup, StoredProxyGroupMember, StoredProxyNode,
     StoredProxyNodeEvent, StoredProxyNodeMetricsBucket, StoredUserAuthRecord,
     StoredUserOAuthLinkSummary, StoredUserPreferenceRecord, StoredUserSessionRecord,
     StoredWalletSnapshot, UpdateManagementTokenRecord, UpsertOAuthProviderConfigRecord,
@@ -1158,6 +1160,33 @@ impl GatewayDataState {
         }
     }
 
+    pub(crate) async fn list_proxy_groups(&self) -> Result<Vec<StoredProxyGroup>, DataLayerError> {
+        match &self.proxy_node_reader {
+            Some(repository) => repository.list_proxy_groups().await,
+            None => Ok(Vec::new()),
+        }
+    }
+
+    pub(crate) async fn find_proxy_group(
+        &self,
+        group_id: &str,
+    ) -> Result<Option<StoredProxyGroup>, DataLayerError> {
+        match &self.proxy_node_reader {
+            Some(repository) => repository.find_proxy_group(group_id).await,
+            None => Ok(None),
+        }
+    }
+
+    pub(crate) async fn list_proxy_group_members(
+        &self,
+        group_id: &str,
+    ) -> Result<Vec<StoredProxyGroupMember>, DataLayerError> {
+        match &self.proxy_node_reader {
+            Some(repository) => repository.list_proxy_group_members(group_id).await,
+            None => Ok(Vec::new()),
+        }
+    }
+
     pub(crate) async fn list_proxy_node_events(
         &self,
         node_id: &str,
@@ -1245,6 +1274,74 @@ impl GatewayDataState {
     ) -> Result<Option<StoredProxyNode>, DataLayerError> {
         match &self.proxy_node_writer {
             Some(repository) => repository.update_manual_node(mutation).await,
+            None => Ok(None),
+        }
+    }
+
+    pub(crate) async fn create_proxy_group(
+        &self,
+        mutation: &ProxyGroupCreateMutation,
+    ) -> Result<Option<StoredProxyGroup>, DataLayerError> {
+        match &self.proxy_node_writer {
+            Some(repository) => repository.create_proxy_group(mutation).await.map(Some),
+            None => Ok(None),
+        }
+    }
+
+    pub(crate) async fn update_proxy_group(
+        &self,
+        mutation: &ProxyGroupUpdateMutation,
+    ) -> Result<Option<StoredProxyGroup>, DataLayerError> {
+        match &self.proxy_node_writer {
+            Some(repository) => repository.update_proxy_group(mutation).await,
+            None => Ok(None),
+        }
+    }
+
+    pub(crate) async fn delete_proxy_group(
+        &self,
+        group_id: &str,
+    ) -> Result<Option<StoredProxyGroup>, DataLayerError> {
+        match &self.proxy_node_writer {
+            Some(repository) => repository.delete_proxy_group(group_id).await,
+            None => Ok(None),
+        }
+    }
+
+    pub(crate) async fn upsert_proxy_group_member(
+        &self,
+        mutation: &ProxyGroupMemberUpsertMutation,
+    ) -> Result<Option<StoredProxyGroupMember>, DataLayerError> {
+        match &self.proxy_node_writer {
+            Some(repository) => repository
+                .upsert_proxy_group_member(mutation)
+                .await
+                .map(Some),
+            None => Ok(None),
+        }
+    }
+
+    pub(crate) async fn update_proxy_group_member(
+        &self,
+        mutation: &ProxyGroupMemberUpdateMutation,
+    ) -> Result<Option<StoredProxyGroupMember>, DataLayerError> {
+        match &self.proxy_node_writer {
+            Some(repository) => repository.update_proxy_group_member(mutation).await,
+            None => Ok(None),
+        }
+    }
+
+    pub(crate) async fn delete_proxy_group_member(
+        &self,
+        group_id: &str,
+        node_id: &str,
+    ) -> Result<Option<StoredProxyGroupMember>, DataLayerError> {
+        match &self.proxy_node_writer {
+            Some(repository) => {
+                repository
+                    .delete_proxy_group_member(group_id, node_id)
+                    .await
+            }
             None => Ok(None),
         }
     }

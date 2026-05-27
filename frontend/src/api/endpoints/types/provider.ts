@@ -5,12 +5,15 @@ import type { ProviderKeyStatusSnapshot } from './statusSnapshot'
  * 支持两种模式：
  * - 手动配置：设置 url/username/password
  * - 代理节点：设置 node_id（与 url 互斥）
+ * - 代理组：设置 mode=group 和 group_id
  */
 export interface ProxyConfig {
+  mode?: 'group' | string
   url?: string
   username?: string
   password?: string
   node_id?: string    // 代理节点 ID（aether-tunnel 注册的节点，与 url 互斥）
+  group_id?: string   // 代理组 ID（运行时会解析为单个节点）
   enabled?: boolean   // 是否启用代理（false 时保留配置但不使用）
 }
 

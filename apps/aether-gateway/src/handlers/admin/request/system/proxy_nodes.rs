@@ -27,6 +27,52 @@ impl<'a> AdminAppState<'a> {
         self.app.update_manual_proxy_node(mutation).await
     }
 
+    pub(crate) async fn create_proxy_group(
+        &self,
+        mutation: &aether_data::repository::proxy_nodes::ProxyGroupCreateMutation,
+    ) -> Result<Option<aether_data::repository::proxy_nodes::StoredProxyGroup>, GatewayError> {
+        self.app.create_proxy_group(mutation).await
+    }
+
+    pub(crate) async fn update_proxy_group(
+        &self,
+        mutation: &aether_data::repository::proxy_nodes::ProxyGroupUpdateMutation,
+    ) -> Result<Option<aether_data::repository::proxy_nodes::StoredProxyGroup>, GatewayError> {
+        self.app.update_proxy_group(mutation).await
+    }
+
+    pub(crate) async fn delete_proxy_group(
+        &self,
+        group_id: &str,
+    ) -> Result<Option<aether_data::repository::proxy_nodes::StoredProxyGroup>, GatewayError> {
+        self.app.delete_proxy_group(group_id).await
+    }
+
+    pub(crate) async fn upsert_proxy_group_member(
+        &self,
+        mutation: &aether_data::repository::proxy_nodes::ProxyGroupMemberUpsertMutation,
+    ) -> Result<Option<aether_data::repository::proxy_nodes::StoredProxyGroupMember>, GatewayError>
+    {
+        self.app.upsert_proxy_group_member(mutation).await
+    }
+
+    pub(crate) async fn update_proxy_group_member(
+        &self,
+        mutation: &aether_data::repository::proxy_nodes::ProxyGroupMemberUpdateMutation,
+    ) -> Result<Option<aether_data::repository::proxy_nodes::StoredProxyGroupMember>, GatewayError>
+    {
+        self.app.update_proxy_group_member(mutation).await
+    }
+
+    pub(crate) async fn delete_proxy_group_member(
+        &self,
+        group_id: &str,
+        node_id: &str,
+    ) -> Result<Option<aether_data::repository::proxy_nodes::StoredProxyGroupMember>, GatewayError>
+    {
+        self.app.delete_proxy_group_member(group_id, node_id).await
+    }
+
     pub(crate) async fn register_proxy_node(
         &self,
         mutation: &aether_data::repository::proxy_nodes::ProxyNodeRegistrationMutation,

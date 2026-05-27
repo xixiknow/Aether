@@ -68,9 +68,9 @@
                       <Button
                         variant="ghost"
                         size="icon"
-                        :class="provider.proxy?.node_id ? 'text-blue-500' : ''"
+                        :class="hasProxyTarget(provider.proxy) ? 'text-blue-500' : ''"
                         :disabled="savingProviderProxy"
-                        :title="provider.proxy?.node_id ? `代理: ${getProviderProxyNodeName()}` : '设置代理节点'"
+                        :title="hasProxyTarget(provider.proxy) ? `代理: ${getProviderProxyName()}` : '设置代理目标'"
                       >
                         <Globe class="w-4 h-4" />
                       </Button>
@@ -82,9 +82,9 @@
                     >
                       <div class="space-y-2">
                         <div class="flex items-center justify-between">
-                          <span class="text-xs font-medium">代理节点</span>
+                          <span class="text-xs font-medium">代理目标</span>
                           <Button
-                            v-if="provider.proxy?.node_id"
+                            v-if="hasProxyTarget(provider.proxy)"
                             variant="ghost"
                             size="sm"
                             class="h-6 px-2 text-[10px] text-muted-foreground"
@@ -95,12 +95,13 @@
                           </Button>
                         </div>
                         <ProxyNodeSelect
-                          :model-value="provider.proxy?.node_id || ''"
+                          :model-value="proxyTargetValue(provider.proxy)"
+                          include-groups
                           trigger-class="h-8"
                           @update:model-value="setProviderProxy"
                         />
                         <p class="text-[10px] text-muted-foreground">
-                          {{ provider.proxy?.node_id ? '当前使用独立代理' : '未设置代理节点' }}
+                          {{ hasProxyTarget(provider.proxy) ? '当前使用独立代理目标' : '未设置代理目标' }}
                         </p>
                       </div>
                     </PopoverContent>
@@ -477,9 +478,9 @@
                               variant="ghost"
                               size="icon"
                               class="h-7 w-7"
-                              :class="key.proxy?.node_id ? 'text-blue-500' : ''"
+                              :class="hasProxyTarget(key.proxy) ? 'text-blue-500' : ''"
                               :disabled="savingProxyKeyId === key.id"
-                              :title="key.proxy?.node_id ? `代理: ${getKeyProxyNodeName(key)}` : '设置代理节点'"
+                              :title="hasProxyTarget(key.proxy) ? `代理: ${getKeyProxyNodeName(key)}` : '设置代理目标'"
                               @click.stop
                             >
                               <Globe class="w-3.5 h-3.5" />
@@ -492,9 +493,9 @@
                           >
                             <div class="space-y-2">
                               <div class="flex items-center justify-between">
-                                <span class="text-xs font-medium">代理节点</span>
+                                <span class="text-xs font-medium">代理目标</span>
                                 <Button
-                                  v-if="key.proxy?.node_id"
+                                  v-if="hasProxyTarget(key.proxy)"
                                   variant="ghost"
                                   size="sm"
                                   class="h-6 px-2 text-[10px] text-muted-foreground"
@@ -505,12 +506,13 @@
                                 </Button>
                               </div>
                               <ProxyNodeSelect
-                                :model-value="key.proxy?.node_id || ''"
+                                :model-value="proxyTargetValue(key.proxy)"
+                                include-groups
                                 trigger-class="h-8"
                                 @update:model-value="(v: string) => setKeyProxy(key, v)"
                               />
                               <p class="text-[10px] text-muted-foreground">
-                                {{ key.proxy?.node_id ? '当前使用独立代理' : '未设置，使用提供商级别代理' }}
+                                {{ hasProxyTarget(key.proxy) ? '当前使用独立代理目标' : '未设置，使用提供商级别代理' }}
                               </p>
                             </div>
                           </PopoverContent>
@@ -1404,6 +1406,12 @@ import AlertDialog from '@/components/common/AlertDialog.vue'
 import AntigravityQuotaDialog from '@/features/providers/components/AntigravityQuotaDialog.vue'
 import FailoverRulesDialog from '@/features/providers/components/FailoverRulesDialog.vue'
 import ProxyNodeSelect from '@/features/providers/components/ProxyNodeSelect.vue'
+import {
+  getProxyTargetName as resolveProxyTargetName,
+  hasProxyTarget,
+  proxyPayloadFromTarget,
+  proxyTargetValue,
+} from '@/features/providers/utils/proxyTarget'
 import { useProxyNodesStore } from '@/stores/proxy-nodes'
 import {
   deleteEndpointKey,
@@ -1422,6 +1430,7 @@ import {
   sortApiFormats,
 } from '@/api/endpoints'
 import type {
+  ProxyConfig,
   UpstreamMetadata,
   AntigravityModelQuota,
   CodexUpstreamMetadata,
@@ -1789,23 +1798,24 @@ function handleProviderProxyPopoverToggle(open: boolean) {
   }
 }
 
-function getProviderProxyNodeName(): string {
-  const nodeId = provider.value?.proxy?.node_id
-  if (!nodeId) return '未知节点'
-  const node = proxyNodesStore.nodes.find(n => n.id === nodeId)
-  return node ? node.name : `${nodeId.slice(0, 8)}...`
+function getProxyTargetName(proxy?: ProxyConfig | null): string | null {
+  return resolveProxyTargetName(proxy, proxyNodesStore.groups, proxyNodesStore.nodes)
 }
 
-async function setProviderProxy(nodeId: string) {
-  if (!provider.value) return
+function getProviderProxyName(): string {
+  return getProxyTargetName(provider.value?.proxy) || '未知代理'
+}
+
+async function setProviderProxy(target: string) {
+  if (!provider.value || !target) return
   savingProviderProxy.value = true
   try {
     const updated = await updateProvider(provider.value.id, {
-      proxy: { node_id: nodeId, enabled: true },
+      proxy: proxyPayloadFromTarget(target),
     })
     provider.value = updated
     providerProxyPopoverOpen.value = false
-    showSuccess('代理节点已设置')
+    showSuccess('代理目标已设置')
     emit('refresh')
   } catch (err: unknown) {
     showError(parseApiError(err, '设置代理失败'))
@@ -3032,9 +3042,7 @@ async function toggleKeyActive(key: EndpointAPIKey) {
 
 /** 获取 Key 当前代理节点的名称（用于显示） */
 function getKeyProxyNodeName(key: EndpointAPIKey): string | null {
-  if (!key.proxy?.node_id) return null
-  const node = proxyNodesStore.nodes.find(n => n.id === key.proxy?.node_id)
-  return node ? node.name : `${key.proxy.node_id.slice(0, 8)  }...`
+  return getProxyTargetName(key.proxy)
 }
 
 /** 切换代理 Popover 的打开/关闭状态 */
@@ -3046,15 +3054,16 @@ function handleProxyPopoverToggle(keyId: string, open: boolean) {
 }
 
 /** 设置 Key 的代理节点 */
-async function setKeyProxy(key: EndpointAPIKey, nodeId: string) {
+async function setKeyProxy(key: EndpointAPIKey, target: string) {
+  if (!target) return
   savingProxyKeyId.value = key.id
   try {
     await updateProviderKey(key.id, {
-      proxy: { node_id: nodeId, enabled: true },
+      proxy: proxyPayloadFromTarget(target),
     })
-    key.proxy = { node_id: nodeId, enabled: true }
+    key.proxy = proxyPayloadFromTarget(target)
     proxyPopoverOpenKeyId.value = null
-    showSuccess('代理节点已设置')
+    showSuccess('代理目标已设置')
     emit('refresh')
   } catch (err: unknown) {
     showError(parseApiError(err, '设置代理失败'), '错误')

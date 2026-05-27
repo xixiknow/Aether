@@ -10,10 +10,11 @@
         <div class="flex flex-col gap-3 sm:hidden">
           <div class="flex items-center justify-between">
             <h3 class="text-base font-semibold">
-              代理节点
+              {{ activeView === 'groups' ? '代理组' : '代理节点' }}
             </h3>
             <div class="flex items-center gap-2">
               <Button
+                v-if="activeView === 'nodes'"
                 size="sm"
                 variant="outline"
                 class="h-7 text-xs"
@@ -22,6 +23,7 @@
                 均分
               </Button>
               <Button
+                v-if="activeView === 'nodes'"
                 size="sm"
                 variant="outline"
                 class="h-7 text-xs"
@@ -30,6 +32,7 @@
                 升级
               </Button>
               <Button
+                v-if="activeView === 'nodes'"
                 size="sm"
                 class="h-7 text-xs"
                 @click="openAddDialog"
@@ -37,23 +40,51 @@
                 <Plus class="w-3 h-3 mr-1" />
                 添加
               </Button>
+              <Button
+                v-else
+                size="sm"
+                class="h-7 text-xs"
+                @click="openCreateGroupDialog"
+              >
+                <Plus class="w-3 h-3 mr-1" />
+                添加组
+              </Button>
               <RefreshButton
                 :loading="store.loading"
                 @click="refresh"
               />
             </div>
           </div>
+          <Tabs v-model="activeView">
+            <TabsList class="grid w-full grid-cols-2 h-8">
+              <TabsTrigger
+                value="nodes"
+                class="h-7 text-xs"
+              >
+                节点
+              </TabsTrigger>
+              <TabsTrigger
+                value="groups"
+                class="h-7 text-xs"
+              >
+                代理组
+              </TabsTrigger>
+            </TabsList>
+          </Tabs>
           <div class="flex flex-wrap items-center gap-2">
             <div class="relative min-w-0 basis-full">
               <Search class="absolute left-2.5 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-muted-foreground z-10 pointer-events-none" />
               <Input
                 v-model="searchQuery"
                 type="text"
-                placeholder="搜索..."
+                :placeholder="searchPlaceholder"
                 class="w-full pl-8 pr-3 h-8 text-sm bg-background/50 border-border/60"
               />
             </div>
-            <div class="min-w-0 flex-1">
+            <div
+              v-if="activeView === 'nodes'"
+              class="min-w-0 flex-1"
+            >
               <Select v-model="filterStatus">
                 <SelectTrigger class="w-full h-8 text-xs border-border/60">
                   <SelectValue placeholder="状态" />
@@ -76,21 +107,45 @@
 
         <!-- 桌面端 -->
         <div class="hidden sm:flex items-center justify-between gap-4">
-          <h3 class="text-base font-semibold">
-            代理节点
-          </h3>
+          <div class="flex items-center gap-3">
+            <h3 class="text-base font-semibold">
+              {{ activeView === 'groups' ? '代理组' : '代理节点' }}
+            </h3>
+            <Tabs v-model="activeView">
+              <TabsList class="h-8">
+                <TabsTrigger
+                  value="nodes"
+                  class="h-7 text-xs"
+                >
+                  节点
+                </TabsTrigger>
+                <TabsTrigger
+                  value="groups"
+                  class="h-7 text-xs"
+                >
+                  代理组
+                </TabsTrigger>
+              </TabsList>
+            </Tabs>
+          </div>
           <div class="flex items-center gap-2">
             <div class="relative">
               <Search class="absolute left-2.5 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-muted-foreground z-10 pointer-events-none" />
               <Input
                 v-model="searchQuery"
                 type="text"
-                placeholder="搜索..."
+                :placeholder="searchPlaceholder"
                 class="w-48 pl-8 pr-3 h-8 text-sm bg-background/50 border-border/60"
               />
             </div>
-            <div class="h-4 w-px bg-border" />
-            <div class="xl:hidden">
+            <div
+              v-if="activeView === 'nodes'"
+              class="h-4 w-px bg-border"
+            />
+            <div
+              v-if="activeView === 'nodes'"
+              class="xl:hidden"
+            >
               <Select v-model="filterStatus">
                 <SelectTrigger class="w-28 h-8 text-xs border-border/60">
                   <SelectValue placeholder="全部状态" />
@@ -110,6 +165,7 @@
             </div>
             <div class="h-4 w-px bg-border" />
             <Button
+              v-if="activeView === 'nodes'"
               variant="outline"
               size="sm"
               class="h-8 text-xs"
@@ -119,6 +175,7 @@
               号池均分
             </Button>
             <Button
+              v-if="activeView === 'nodes'"
               variant="outline"
               size="sm"
               class="h-8 text-xs"
@@ -127,6 +184,7 @@
               批量升级
             </Button>
             <Button
+              v-if="activeView === 'nodes'"
               variant="ghost"
               size="icon"
               class="h-8 w-8"
@@ -134,6 +192,15 @@
               @click="openAddDialog"
             >
               <Plus class="w-3.5 h-3.5" />
+            </Button>
+            <Button
+              v-else
+              size="sm"
+              class="h-8 text-xs"
+              @click="openCreateGroupDialog"
+            >
+              <Plus class="w-3.5 h-3.5 mr-1.5" />
+              添加代理组
             </Button>
             <RefreshButton
               :loading="store.loading"
@@ -144,7 +211,10 @@
       </div>
 
       <!-- 桌面端表格 -->
-      <div class="hidden xl:block overflow-x-auto">
+      <div
+        v-if="activeView === 'nodes'"
+        class="hidden xl:block overflow-x-auto"
+      >
         <Table>
           <TableHeader>
             <TableRow class="border-b border-border/60 hover:bg-transparent">
@@ -372,7 +442,10 @@
       </div>
 
       <!-- 移动端卡片列表 -->
-      <div class="xl:hidden divide-y divide-border/40">
+      <div
+        v-if="activeView === 'nodes'"
+        class="xl:hidden divide-y divide-border/40"
+      >
         <div
           v-for="node in paginatedNodes"
           :key="node.id"
@@ -527,10 +600,533 @@
         </div>
       </div>
 
+      <!-- 代理组桌面端表格 -->
+      <div
+        v-if="activeView === 'groups'"
+        class="hidden xl:block overflow-x-auto"
+      >
+        <Table>
+          <TableHeader>
+            <TableRow class="border-b border-border/60 hover:bg-transparent">
+              <TableHead class="w-[28px] min-w-[28px] max-w-[28px] h-12 p-0 pl-2" />
+              <TableHead class="w-[220px] h-12 font-semibold">
+                代理组
+              </TableHead>
+              <TableHead class="w-[90px] h-12 font-semibold text-center">
+                启用
+              </TableHead>
+              <TableHead class="w-[120px] h-12 font-semibold text-center">
+                成员
+              </TableHead>
+              <TableHead class="w-[180px] h-12 font-semibold">
+                当前最优
+              </TableHead>
+              <TableHead class="w-[100px] h-12 font-semibold text-center">
+                TopN
+              </TableHead>
+              <TableHead class="h-12 font-semibold">
+                最近错误
+              </TableHead>
+              <TableHead class="w-[120px] h-12 font-semibold text-center">
+                操作
+              </TableHead>
+            </TableRow>
+          </TableHeader>
+          <TableBody>
+            <template
+              v-for="group in paginatedGroups"
+              :key="group.id"
+            >
+              <TableRow
+                class="border-b border-border/40 hover:bg-muted/30 transition-colors"
+                :class="isGroupExpanded(group.id) ? 'bg-muted/20' : ''"
+              >
+                <TableCell class="w-[28px] min-w-[28px] max-w-[28px] p-0 pl-2 text-center">
+                  <button
+                    type="button"
+                    class="inline-flex h-5 w-5 items-center justify-center rounded-md text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1"
+                    :title="isGroupExpanded(group.id) ? '收起成员' : '展开成员'"
+                    @click="toggleGroupDetails(group)"
+                  >
+                    <ChevronDown
+                      v-if="isGroupExpanded(group.id)"
+                      class="h-3.5 w-3.5"
+                    />
+                    <ChevronRight
+                      v-else
+                      class="h-3.5 w-3.5"
+                    />
+                  </button>
+                </TableCell>
+                <TableCell class="py-4">
+                  <div class="flex items-center gap-1.5">
+                    <span class="text-sm font-semibold">{{ group.name }}</span>
+                    <Badge
+                      :variant="group.enabled ? 'success' : 'secondary'"
+                      class="text-[10px] px-1.5 py-0"
+                    >
+                      {{ group.enabled ? '启用' : '停用' }}
+                    </Badge>
+                  </div>
+                  <p
+                    v-if="group.description"
+                    class="mt-1 line-clamp-1 text-xs text-muted-foreground"
+                  >
+                    {{ group.description }}
+                  </p>
+                  <code class="mt-1 block text-[11px] text-muted-foreground">{{ proxyGroupStrategyLabel(group.strategy) }}</code>
+                </TableCell>
+                <TableCell class="py-4 text-center">
+                  <Switch
+                    :model-value="group.enabled"
+                    :disabled="store.loading"
+                    @update:model-value="(enabled: boolean) => handleToggleGroupEnabled(group, enabled)"
+                  />
+                </TableCell>
+                <TableCell class="py-4 text-center">
+                  <span class="text-sm tabular-nums">{{ group.available_member_count }}/{{ group.member_count }}</span>
+                </TableCell>
+                <TableCell class="py-4">
+                  <span class="text-sm text-muted-foreground">{{ groupBestMemberLabel(group) }}</span>
+                </TableCell>
+                <TableCell class="py-4 text-center">
+                  <span class="text-sm tabular-nums">{{ groupTopNLabel(group) }}</span>
+                </TableCell>
+                <TableCell class="py-4">
+                  <span class="line-clamp-1 text-xs text-muted-foreground">{{ groupRecentErrorLabel(group) }}</span>
+                </TableCell>
+                <TableCell class="py-4 text-center">
+                  <div class="flex items-center justify-center gap-0.5">
+                    <Button
+                      variant="ghost"
+                      size="icon"
+                      class="h-8 w-8"
+                      title="编辑"
+                      @click="openEditGroupDialog(group)"
+                    >
+                      <SquarePen class="h-4 w-4" />
+                    </Button>
+                    <Button
+                      variant="ghost"
+                      size="icon"
+                      class="h-8 w-8"
+                      title="删除"
+                      @click="handleDeleteGroup(group)"
+                    >
+                      <Trash2 class="h-4 w-4" />
+                    </Button>
+                  </div>
+                </TableCell>
+              </TableRow>
+              <TableRow
+                v-if="isGroupExpanded(group.id)"
+                class="border-b border-border/40 hover:bg-transparent"
+              >
+                <TableCell
+                  colspan="8"
+                  class="p-0"
+                >
+                  <div class="space-y-4 bg-muted/10 p-4">
+                    <div class="flex flex-wrap items-center justify-between gap-3">
+                      <div class="flex min-w-0 flex-1 items-center gap-2">
+                        <Select v-model="groupMemberDraft[group.id]">
+                          <SelectTrigger
+                            class="h-8 min-w-[240px] max-w-sm text-xs"
+                            :disabled="availableNodesForGroup(group).length === 0"
+                          >
+                            <SelectValue placeholder="选择要加入的代理节点" />
+                          </SelectTrigger>
+                          <SelectContent>
+                            <SelectItem
+                              v-for="node in availableNodesForGroup(group)"
+                              :key="node.id"
+                              :value="node.id"
+                            >
+                              {{ node.name }} · {{ statusLabel(node) }}
+                            </SelectItem>
+                          </SelectContent>
+                        </Select>
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          class="h-8"
+                          :disabled="!groupMemberDraft[group.id]"
+                          @click="handleAddGroupMember(group)"
+                        >
+                          <Plus class="h-3.5 w-3.5 mr-1.5" />
+                          加入组
+                        </Button>
+                      </div>
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        class="h-8"
+                        :disabled="loadingGroupScores.has(group.id)"
+                        @click="refreshGroupScores(group, true)"
+                      >
+                        <Loader2
+                          v-if="loadingGroupScores.has(group.id)"
+                          class="h-3.5 w-3.5 mr-1.5 animate-spin"
+                        />
+                        <Activity
+                          v-else
+                          class="h-3.5 w-3.5 mr-1.5"
+                        />
+                        刷新评分
+                      </Button>
+                    </div>
+
+                    <Table>
+                      <TableHeader>
+                        <TableRow class="hover:bg-transparent">
+                          <TableHead class="w-[220px]">
+                            节点
+                          </TableHead>
+                          <TableHead class="w-[90px] text-center">
+                            启用
+                          </TableHead>
+                          <TableHead class="w-[110px] text-center">
+                            人工权重
+                          </TableHead>
+                          <TableHead class="w-[90px] text-center">
+                            排序
+                          </TableHead>
+                          <TableHead class="w-[110px] text-center">
+                            状态
+                          </TableHead>
+                          <TableHead class="w-[120px] text-center">
+                            分数
+                          </TableHead>
+                          <TableHead>
+                            评分原因
+                          </TableHead>
+                          <TableHead class="w-[80px] text-center">
+                            操作
+                          </TableHead>
+                        </TableRow>
+                      </TableHeader>
+                      <TableBody>
+                        <TableRow
+                          v-for="member in group.members"
+                          :key="member.node_id"
+                          class="border-b border-border/30 hover:bg-muted/20"
+                        >
+                          <TableCell class="py-3">
+                            <div class="flex flex-col gap-0.5">
+                              <span class="text-sm font-medium">{{ member.node?.name || member.node_id }}</span>
+                              <span class="text-xs text-muted-foreground">{{ member.node ? formatRegion(member.node.region) : '节点已删除' }}</span>
+                            </div>
+                          </TableCell>
+                          <TableCell class="py-3 text-center">
+                            <Switch
+                              :model-value="member.enabled"
+                              :disabled="isGroupMemberMutating(member)"
+                              @update:model-value="(enabled: boolean) => handleToggleGroupMember(member, enabled)"
+                            />
+                          </TableCell>
+                          <TableCell class="py-3 text-center">
+                            <Input
+                              :model-value="member.manual_weight"
+                              type="number"
+                              size="sm"
+                              class="mx-auto w-20 text-center"
+                              @change="handleGroupMemberNumberChange(member, 'manual_weight', $event)"
+                            />
+                          </TableCell>
+                          <TableCell class="py-3 text-center">
+                            <Input
+                              :model-value="member.sort_index"
+                              type="number"
+                              size="sm"
+                              class="mx-auto w-16 text-center"
+                              @change="handleGroupMemberNumberChange(member, 'sort_index', $event)"
+                            />
+                          </TableCell>
+                          <TableCell class="py-3 text-center">
+                            <Badge
+                              :variant="memberAvailabilityVariant(group, member)"
+                              class="text-[10px] px-1.5 py-0"
+                            >
+                              {{ memberHardStateLabel(group, member) }}
+                            </Badge>
+                          </TableCell>
+                          <TableCell class="py-3 text-center">
+                            <span class="text-xs tabular-nums text-muted-foreground">
+                              {{ memberScoreLabel(group, member) }} / {{ memberEffectiveScoreLabel(group, member) }}
+                            </span>
+                          </TableCell>
+                          <TableCell class="py-3">
+                            <span
+                              class="line-clamp-1 text-xs text-muted-foreground"
+                              :title="scoreReasonTitle(group, member)"
+                            >
+                              {{ scoreReasonBrief(group, member) }}
+                            </span>
+                          </TableCell>
+                          <TableCell class="py-3 text-center">
+                            <Button
+                              variant="ghost"
+                              size="icon"
+                              class="h-7 w-7"
+                              title="移除成员"
+                              :disabled="isGroupMemberMutating(member)"
+                              @click="handleDeleteGroupMember(member)"
+                            >
+                              <Trash2 class="h-3.5 w-3.5" />
+                            </Button>
+                          </TableCell>
+                        </TableRow>
+                        <TableRow v-if="group.members.length === 0">
+                          <TableCell
+                            colspan="8"
+                            class="py-8 text-center text-sm text-muted-foreground"
+                          >
+                            暂无组成员
+                          </TableCell>
+                        </TableRow>
+                      </TableBody>
+                    </Table>
+                  </div>
+                </TableCell>
+              </TableRow>
+            </template>
+            <TableRow v-if="paginatedGroups.length === 0">
+              <TableCell
+                colspan="8"
+                class="py-12 text-center text-muted-foreground text-sm"
+              >
+                {{ store.loading ? '加载中...' : '暂无代理组' }}
+              </TableCell>
+            </TableRow>
+          </TableBody>
+        </Table>
+      </div>
+
+      <!-- 代理组移动端卡片列表 -->
+      <div
+        v-if="activeView === 'groups'"
+        class="xl:hidden divide-y divide-border/40"
+      >
+        <div
+          v-for="group in paginatedGroups"
+          :key="group.id"
+          class="p-4 sm:p-5"
+        >
+          <div class="flex items-start justify-between gap-3">
+            <div class="min-w-0">
+              <div class="flex items-center gap-1.5">
+                <button
+                  type="button"
+                  class="inline-flex h-5 w-5 items-center justify-center rounded-md text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 shrink-0"
+                  :title="isGroupExpanded(group.id) ? '收起成员' : '展开成员'"
+                  @click="toggleGroupDetails(group)"
+                >
+                  <ChevronDown
+                    v-if="isGroupExpanded(group.id)"
+                    class="h-3.5 w-3.5"
+                  />
+                  <ChevronRight
+                    v-else
+                    class="h-3.5 w-3.5"
+                  />
+                </button>
+                <span class="truncate text-sm font-semibold">{{ group.name }}</span>
+                <Badge
+                  :variant="group.enabled ? 'success' : 'secondary'"
+                  class="text-[10px] px-1.5 py-0"
+                >
+                  {{ group.enabled ? '启用' : '停用' }}
+                </Badge>
+              </div>
+              <p
+                v-if="group.description"
+                class="mt-1 line-clamp-2 text-xs text-muted-foreground"
+              >
+                {{ group.description }}
+              </p>
+            </div>
+            <Switch
+              :model-value="group.enabled"
+              :disabled="store.loading"
+              @update:model-value="(enabled: boolean) => handleToggleGroupEnabled(group, enabled)"
+            />
+          </div>
+
+          <div class="mt-3 grid grid-cols-3 gap-2 text-xs text-muted-foreground">
+            <div>
+              <span class="block text-foreground/60">成员</span>
+              <span class="tabular-nums">{{ group.available_member_count }}/{{ group.member_count }}</span>
+            </div>
+            <div>
+              <span class="block text-foreground/60">TopN</span>
+              <span class="tabular-nums">{{ groupTopNLabel(group) }}</span>
+            </div>
+            <div>
+              <span class="block text-foreground/60">最优</span>
+              <span class="line-clamp-1">{{ groupBestMemberLabel(group) }}</span>
+            </div>
+          </div>
+          <div class="mt-3 flex items-center justify-between gap-2">
+            <span class="line-clamp-1 text-xs text-muted-foreground">{{ groupRecentErrorLabel(group) }}</span>
+            <div class="flex items-center gap-1">
+              <Button
+                variant="ghost"
+                size="sm"
+                class="h-7 px-2 text-xs"
+                @click="openEditGroupDialog(group)"
+              >
+                <SquarePen class="h-3 w-3 mr-1" />
+                编辑
+              </Button>
+              <Button
+                variant="ghost"
+                size="sm"
+                class="h-7 px-2 text-xs"
+                @click="handleDeleteGroup(group)"
+              >
+                <Trash2 class="h-3 w-3 mr-1" />
+                删除
+              </Button>
+            </div>
+          </div>
+
+          <div
+            v-if="isGroupExpanded(group.id)"
+            class="mt-4 space-y-3"
+          >
+            <div class="grid grid-cols-[1fr_auto] gap-2">
+              <Select v-model="groupMemberDraft[group.id]">
+                <SelectTrigger
+                  class="h-8 text-xs"
+                  :disabled="availableNodesForGroup(group).length === 0"
+                >
+                  <SelectValue placeholder="选择代理节点" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem
+                    v-for="node in availableNodesForGroup(group)"
+                    :key="node.id"
+                    :value="node.id"
+                  >
+                    {{ node.name }} · {{ statusLabel(node) }}
+                  </SelectItem>
+                </SelectContent>
+              </Select>
+              <Button
+                variant="outline"
+                size="sm"
+                class="h-8 px-2"
+                :disabled="!groupMemberDraft[group.id]"
+                @click="handleAddGroupMember(group)"
+              >
+                <Plus class="h-3.5 w-3.5" />
+              </Button>
+            </div>
+            <Button
+              variant="ghost"
+              size="sm"
+              class="h-8 w-full"
+              :disabled="loadingGroupScores.has(group.id)"
+              @click="refreshGroupScores(group, true)"
+            >
+              <Loader2
+                v-if="loadingGroupScores.has(group.id)"
+                class="h-3.5 w-3.5 mr-1.5 animate-spin"
+              />
+              <Activity
+                v-else
+                class="h-3.5 w-3.5 mr-1.5"
+              />
+              刷新评分
+            </Button>
+            <div class="space-y-2">
+              <div
+                v-for="member in group.members"
+                :key="member.node_id"
+                class="rounded-lg border border-border/50 bg-muted/20 p-3"
+              >
+                <div class="flex items-start justify-between gap-2">
+                  <div class="min-w-0">
+                    <div class="truncate text-sm font-medium">
+                      {{ member.node?.name || member.node_id }}
+                    </div>
+                    <div class="text-xs text-muted-foreground">
+                      {{ member.node ? formatRegion(member.node.region) : '节点已删除' }}
+                    </div>
+                  </div>
+                  <Badge
+                    :variant="memberAvailabilityVariant(group, member)"
+                    class="text-[10px] px-1.5 py-0"
+                  >
+                    {{ memberHardStateLabel(group, member) }}
+                  </Badge>
+                </div>
+                <div class="mt-3 grid grid-cols-2 gap-2 text-xs">
+                  <label class="space-y-1">
+                    <span class="text-muted-foreground">人工权重</span>
+                    <Input
+                      :model-value="member.manual_weight"
+                      type="number"
+                      size="sm"
+                      @change="handleGroupMemberNumberChange(member, 'manual_weight', $event)"
+                    />
+                  </label>
+                  <label class="space-y-1">
+                    <span class="text-muted-foreground">排序</span>
+                    <Input
+                      :model-value="member.sort_index"
+                      type="number"
+                      size="sm"
+                      @change="handleGroupMemberNumberChange(member, 'sort_index', $event)"
+                    />
+                  </label>
+                </div>
+                <div class="mt-3 flex items-center justify-between gap-2">
+                  <span
+                    class="line-clamp-1 text-xs text-muted-foreground"
+                    :title="scoreReasonTitle(group, member)"
+                  >
+                    {{ memberScoreLabel(group, member) }} / {{ memberEffectiveScoreLabel(group, member) }} · {{ scoreReasonBrief(group, member) }}
+                  </span>
+                  <div class="flex items-center gap-2">
+                    <Switch
+                      :model-value="member.enabled"
+                      :disabled="isGroupMemberMutating(member)"
+                      @update:model-value="(enabled: boolean) => handleToggleGroupMember(member, enabled)"
+                    />
+                    <Button
+                      variant="ghost"
+                      size="icon"
+                      class="h-7 w-7"
+                      :disabled="isGroupMemberMutating(member)"
+                      @click="handleDeleteGroupMember(member)"
+                    >
+                      <Trash2 class="h-3.5 w-3.5" />
+                    </Button>
+                  </div>
+                </div>
+              </div>
+              <div
+                v-if="group.members.length === 0"
+                class="py-6 text-center text-sm text-muted-foreground"
+              >
+                暂无组成员
+              </div>
+            </div>
+          </div>
+        </div>
+        <div
+          v-if="paginatedGroups.length === 0"
+          class="p-8 text-center text-muted-foreground text-sm"
+        >
+          {{ store.loading ? '加载中...' : '暂无代理组' }}
+        </div>
+      </div>
+
       <!-- 分页 -->
       <Pagination
         :current="currentPage"
-        :total="filteredNodes.length"
+        :total="currentTotal"
         :page-size="pageSize"
         cache-key="proxy-nodes-page-size"
         @update:current="currentPage = $event"
@@ -828,6 +1424,93 @@
       </template>
     </Dialog>
 
+    <!-- 代理组对话框 -->
+    <Dialog
+      :model-value="showGroupDialog"
+      :title="editingGroup ? '编辑代理组' : '创建代理组'"
+      description="代理组只引用已有代理节点，运行时会按评分和负载选择当前最优成员"
+      :icon="Users"
+      size="md"
+      @update:model-value="handleGroupDialogClose"
+    >
+      <form
+        class="space-y-4"
+        @submit.prevent="handleSaveGroup"
+      >
+        <div class="space-y-1.5">
+          <Label>名称 *</Label>
+          <Input
+            v-model="groupForm.name"
+            placeholder="例如: 亚太低延迟组"
+          />
+        </div>
+        <div class="space-y-1.5">
+          <Label>描述</Label>
+          <Textarea
+            v-model="groupForm.description"
+            class="min-h-[84px]"
+            placeholder="可选，用于说明用途或地域"
+          />
+        </div>
+        <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
+          <div class="space-y-1.5">
+            <Label>选择策略</Label>
+            <Select v-model="groupForm.strategy">
+              <SelectTrigger>
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem
+                  v-for="option in proxyGroupStrategyOptions"
+                  :key="option.value"
+                  :value="option.value"
+                >
+                  {{ option.label }}
+                </SelectItem>
+              </SelectContent>
+            </Select>
+          </div>
+          <div
+            v-if="proxyGroupStrategyUsesTopN(groupForm.strategy)"
+            class="space-y-1.5"
+          >
+            <Label>TopN 候选数</Label>
+            <Input
+              v-model="groupForm.top_n"
+              type="number"
+              min="1"
+              max="50"
+            />
+          </div>
+        </div>
+        <div class="flex items-center justify-between rounded-lg border border-border/60 bg-muted/30 px-3 py-2">
+          <div>
+            <div class="text-sm font-medium">
+              启用代理组
+            </div>
+            <div class="text-xs text-muted-foreground">
+              停用后配置到 provider/endpoint/key 的该组会被视为不可用并继续向下 fallback。
+            </div>
+          </div>
+          <Switch v-model="groupForm.enabled" />
+        </div>
+      </form>
+      <template #footer>
+        <Button
+          variant="outline"
+          @click="handleGroupDialogClose(false)"
+        >
+          取消
+        </Button>
+        <Button
+          :disabled="savingGroup || !groupForm.name.trim()"
+          @click="handleSaveGroup"
+        >
+          {{ savingGroup ? '保存中...' : (editingGroup ? '保存' : '创建') }}
+        </Button>
+      </template>
+    </Dialog>
+
     <!-- 远程配置对话框 (aether-tunnel 节点) -->
     <Dialog
       :model-value="showConfigDialog"
@@ -1063,6 +1746,9 @@ import { useConfirm } from '@/composables/useConfirm'
 import { useClipboard } from '@/composables/useClipboard'
 import {
   proxyNodesApi,
+  type ProxyGroup,
+  type ProxyGroupMember,
+  type ProxyGroupMemberScore,
   type ProxyNode,
   type ProxyNodeEvent,
   type ProxyNodeInstallSession,
@@ -1094,10 +1780,14 @@ import {
   Pagination,
   RefreshButton,
   Dialog,
+  Switch,
+  Tabs,
+  TabsList,
+  TabsTrigger,
   Textarea,
 } from '@/components/ui'
 
-import { Search, Trash2, Plus, SquarePen, Activity, Loader2, Settings, History, ChevronDown, ChevronRight, Terminal, Copy, CheckCircle, ListPlus, Shuffle } from 'lucide-vue-next'
+import { Search, Trash2, Plus, SquarePen, Activity, Loader2, Settings, History, ChevronDown, ChevronRight, Terminal, Copy, CheckCircle, ListPlus, Shuffle, Users } from 'lucide-vue-next'
 import { parseApiError } from '@/utils/errorParser'
 import { formatCompactNumber } from '@/utils/format'
 import { formatRegion } from '@/utils/region'
@@ -1111,6 +1801,18 @@ const { confirmDanger } = useConfirm()
 const { copyToClipboard } = useClipboard()
 const store = useProxyNodesStore()
 
+type ProxyNodesView = 'nodes' | 'groups'
+type GroupMemberNumberField = 'manual_weight' | 'sort_index'
+
+const DEFAULT_PROXY_GROUP_STRATEGY = 'balanced_weighted'
+const proxyGroupStrategyOptions = [
+  { value: 'balanced_weighted', label: '均衡优先' },
+  { value: 'stable_failover', label: '稳定优先' },
+  { value: 'success_rate', label: '成功率优先' },
+  { value: 'manual_priority', label: '人工优先' },
+]
+
+const activeView = ref<ProxyNodesView>('nodes')
 const searchQuery = ref('')
 const filterStatus = ref('all')
 const proxyNodeStatusFilterOptions = [
@@ -1120,6 +1822,23 @@ const proxyNodeStatusFilterOptions = [
 ]
 const currentPage = ref(1)
 const pageSize = ref(20)
+
+// 代理组对话框
+const showGroupDialog = ref(false)
+const savingGroup = ref(false)
+const editingGroup = ref<ProxyGroup | null>(null)
+const groupForm = ref({
+  name: '',
+  description: '',
+  enabled: true,
+  strategy: DEFAULT_PROXY_GROUP_STRATEGY,
+  top_n: '3',
+})
+const expandedGroupIds = ref(new Set<string>())
+const groupMemberDraft = ref<Record<string, string>>({})
+const mutatingGroupMemberKeys = ref(new Set<string>())
+const loadingGroupScores = ref(new Set<string>())
+const groupScores = ref<Record<string, ProxyGroupMemberScore[]>>({})
 
 // 手动添加/编辑对话框
 const showAddDialog = ref(false)
@@ -1222,7 +1941,37 @@ const paginatedNodes = computed(() => {
   return filteredNodes.value.slice(start, start + pageSize.value)
 })
 
-watch([searchQuery, filterStatus], () => {
+const filteredGroups = computed(() => {
+  let filtered = [...store.groups]
+
+  if (searchQuery.value) {
+    const keywords = searchQuery.value.toLowerCase().split(/\s+/).filter(k => k.length > 0)
+    filtered = filtered.filter(group => {
+      const memberText = group.members
+        .map(member => `${member.node?.name || ''} ${member.node_id}`)
+        .join(' ')
+      const text = `${group.name} ${group.description || ''} ${memberText}`.toLowerCase()
+      return keywords.every(kw => text.includes(kw))
+    })
+  }
+
+  return filtered
+})
+
+const paginatedGroups = computed(() => {
+  const start = (currentPage.value - 1) * pageSize.value
+  return filteredGroups.value.slice(start, start + pageSize.value)
+})
+
+const currentTotal = computed(() =>
+  activeView.value === 'groups' ? filteredGroups.value.length : filteredNodes.value.length
+)
+
+const searchPlaceholder = computed(() =>
+  activeView.value === 'groups' ? '搜索代理组...' : '搜索...'
+)
+
+watch([searchQuery, filterStatus, activeView], () => {
   currentPage.value = 1
 })
 
@@ -1544,6 +2293,347 @@ async function handleBatchUpgrade() {
 function resetBatchUpgradeDialog() {
   showBatchUpgradeDialog.value = false
   batchUpgradeVersion.value = ''
+}
+
+function openCreateGroupDialog() {
+  editingGroup.value = null
+  groupForm.value = {
+    name: '',
+    description: '',
+    enabled: true,
+    strategy: DEFAULT_PROXY_GROUP_STRATEGY,
+    top_n: '3',
+  }
+  showGroupDialog.value = true
+}
+
+function openEditGroupDialog(group: ProxyGroup) {
+  editingGroup.value = group
+  groupForm.value = {
+    name: group.name,
+    description: group.description || '',
+    enabled: group.enabled,
+    strategy: group.strategy || DEFAULT_PROXY_GROUP_STRATEGY,
+    top_n: String(group.top_n || 3),
+  }
+  showGroupDialog.value = true
+}
+
+function handleGroupDialogClose(open: boolean) {
+  if (!open) {
+    showGroupDialog.value = false
+    savingGroup.value = false
+    editingGroup.value = null
+    groupForm.value = {
+      name: '',
+      description: '',
+      enabled: true,
+      strategy: DEFAULT_PROXY_GROUP_STRATEGY,
+      top_n: '3',
+    }
+  }
+}
+
+function normalizedGroupTopN() {
+  const parsed = Number.parseInt(groupForm.value.top_n, 10)
+  if (!Number.isFinite(parsed) || parsed < 1) return 1
+  return parsed
+}
+
+async function handleSaveGroup() {
+  const name = groupForm.value.name.trim()
+  if (!name || savingGroup.value) return
+
+  savingGroup.value = true
+  const strategy = groupForm.value.strategy.trim() || DEFAULT_PROXY_GROUP_STRATEGY
+  const payload = {
+    name,
+    description: groupForm.value.description.trim() || null,
+    enabled: groupForm.value.enabled,
+    strategy,
+    ...(proxyGroupStrategyUsesTopN(strategy) ? { top_n: normalizedGroupTopN() } : {}),
+  }
+
+  try {
+    if (editingGroup.value) {
+      await store.updateGroup(editingGroup.value.id, payload)
+      success('代理组已保存')
+    } else {
+      await store.createGroup(payload)
+      success('代理组已创建')
+    }
+    handleGroupDialogClose(false)
+  } catch (err: unknown) {
+    toastError(parseApiError(err, editingGroup.value ? '保存代理组失败' : '创建代理组失败'))
+  } finally {
+    savingGroup.value = false
+  }
+}
+
+async function handleToggleGroupEnabled(group: ProxyGroup, enabled: boolean) {
+  try {
+    await store.updateGroup(group.id, { enabled })
+    success(enabled ? '代理组已启用' : '代理组已停用')
+  } catch (err: unknown) {
+    toastError(parseApiError(err, '更新代理组状态失败'))
+  }
+}
+
+async function handleDeleteGroup(group: ProxyGroup) {
+  const confirmed = await confirmDanger(
+    `确定要删除代理组 "${group.name}" 吗？组内成员关系会一起删除，代理节点本身会保留。`,
+    '删除代理组'
+  )
+  if (!confirmed) return
+
+  try {
+    await store.deleteGroup(group.id)
+    delete groupScores.value[group.id]
+    success('代理组已删除')
+  } catch (err: unknown) {
+    toastError(parseApiError(err, '删除代理组失败'))
+  }
+}
+
+function isGroupExpanded(groupId: string) {
+  return expandedGroupIds.value.has(groupId)
+}
+
+function toggleGroupDetails(group: ProxyGroup) {
+  const next = new Set(expandedGroupIds.value)
+  if (next.has(group.id)) {
+    next.delete(group.id)
+  } else {
+    next.add(group.id)
+    void refreshGroupScores(group)
+  }
+  expandedGroupIds.value = next
+}
+
+function groupMemberActionKey(member: ProxyGroupMember) {
+  return `${member.group_id}:${member.node_id}`
+}
+
+function isGroupMemberMutating(member: ProxyGroupMember) {
+  return mutatingGroupMemberKeys.value.has(groupMemberActionKey(member))
+}
+
+async function withGroupMemberMutation(member: ProxyGroupMember, action: () => Promise<void>) {
+  const key = groupMemberActionKey(member)
+  if (mutatingGroupMemberKeys.value.has(key)) return
+  const next = new Set(mutatingGroupMemberKeys.value)
+  next.add(key)
+  mutatingGroupMemberKeys.value = next
+  try {
+    await action()
+  } finally {
+    const done = new Set(mutatingGroupMemberKeys.value)
+    done.delete(key)
+    mutatingGroupMemberKeys.value = done
+  }
+}
+
+function availableNodesForGroup(group: ProxyGroup) {
+  const used = new Set(group.members.map(member => member.node_id))
+  return store.nodes.filter(node => !used.has(node.id))
+}
+
+async function handleAddGroupMember(group: ProxyGroup) {
+  const nodeId = groupMemberDraft.value[group.id]
+  if (!nodeId) return
+
+  try {
+    await store.upsertGroupMember(group.id, nodeId, {
+      enabled: true,
+      manual_weight: 1,
+      sort_index: group.members.length,
+    })
+    groupMemberDraft.value = { ...groupMemberDraft.value, [group.id]: '' }
+    await refreshGroupScores(group, false)
+    success('组成员已添加')
+  } catch (err: unknown) {
+    toastError(parseApiError(err, '添加组成员失败'))
+  }
+}
+
+async function handleToggleGroupMember(member: ProxyGroupMember, enabled: boolean) {
+  await withGroupMemberMutation(member, async () => {
+    try {
+      await store.updateGroupMember(member.group_id, member.node_id, { enabled })
+      success(enabled ? '组成员已启用' : '组成员已停用')
+    } catch (err: unknown) {
+      toastError(parseApiError(err, '更新组成员状态失败'))
+    }
+  })
+}
+
+async function handleGroupMemberNumberChange(
+  member: ProxyGroupMember,
+  field: GroupMemberNumberField,
+  event: Event
+) {
+  const target = event.target as HTMLInputElement | null
+  const value = Number(target?.value)
+  if (!Number.isFinite(value)) return
+  const payload = field === 'manual_weight'
+    ? { manual_weight: value }
+    : { sort_index: Math.trunc(value) }
+
+  await withGroupMemberMutation(member, async () => {
+    try {
+      await store.updateGroupMember(member.group_id, member.node_id, payload)
+      success('组成员已更新')
+    } catch (err: unknown) {
+      toastError(parseApiError(err, '更新组成员失败'))
+    }
+  })
+}
+
+async function handleDeleteGroupMember(member: ProxyGroupMember) {
+  const confirmed = await confirmDanger(
+    `确定要从代理组中移除 "${member.node?.name || member.node_id}" 吗？代理节点本身会保留。`,
+    '移除组成员'
+  )
+  if (!confirmed) return
+
+  await withGroupMemberMutation(member, async () => {
+    try {
+      await store.deleteGroupMember(member.group_id, member.node_id)
+      const scores = groupScores.value[member.group_id]
+      if (scores) {
+        groupScores.value = {
+          ...groupScores.value,
+          [member.group_id]: scores.filter(score => score.node_id !== member.node_id),
+        }
+      }
+      success('组成员已移除')
+    } catch (err: unknown) {
+      toastError(parseApiError(err, '移除组成员失败'))
+    }
+  })
+}
+
+async function refreshGroupScores(group: ProxyGroup, notify = false) {
+  if (loadingGroupScores.value.has(group.id)) return
+  const next = new Set(loadingGroupScores.value)
+  next.add(group.id)
+  loadingGroupScores.value = next
+  try {
+    const response = await proxyNodesApi.listProxyGroupScores(group.id)
+    groupScores.value = { ...groupScores.value, [group.id]: response.items }
+    if (notify) success('代理组评分已刷新')
+  } catch (err: unknown) {
+    toastError(parseApiError(err, '读取代理组评分失败'))
+  } finally {
+    const done = new Set(loadingGroupScores.value)
+    done.delete(group.id)
+    loadingGroupScores.value = done
+  }
+}
+
+function memberScoreSnapshot(group: ProxyGroup, member: ProxyGroupMember): ProxyGroupMemberScore | null {
+  const fresh = groupScores.value[group.id]?.find(score => score.node_id === member.node_id)
+  if (fresh) return fresh
+  if (member.score == null && member.effective_score == null && !member.hard_state) return null
+  return {
+    group_id: member.group_id,
+    node_id: member.node_id,
+    score: member.score ?? 0,
+    effective_score: member.effective_score ?? member.score ?? 0,
+    hard_state: member.hard_state || 'unknown',
+    available: Boolean(member.available),
+    enabled: member.enabled,
+    sort_index: member.sort_index,
+    score_reason: member.score_reason || {},
+    node: member.node || null,
+  }
+}
+
+function formatScore(value: number | null | undefined) {
+  if (value == null || !Number.isFinite(value)) return '-'
+  return value.toFixed(1)
+}
+
+function memberScoreLabel(group: ProxyGroup, member: ProxyGroupMember) {
+  return formatScore(memberScoreSnapshot(group, member)?.score)
+}
+
+function memberEffectiveScoreLabel(group: ProxyGroup, member: ProxyGroupMember) {
+  return formatScore(memberScoreSnapshot(group, member)?.effective_score)
+}
+
+function memberHardStateLabel(group: ProxyGroup, member: ProxyGroupMember) {
+  const snapshot = memberScoreSnapshot(group, member)
+  switch (snapshot?.hard_state) {
+    case 'available': return '可用'
+    case 'disabled': return '已停用'
+    case 'offline': return '离线'
+    case 'draining': return '排空'
+    case 'cordoned': return '封锁'
+    case 'tunnel_unavailable': return '隧道不可用'
+    case 'missing_url': return '缺少 URL'
+    case 'missing_node': return '节点缺失'
+    default: return snapshot?.hard_state || '-'
+  }
+}
+
+function memberAvailabilityVariant(group: ProxyGroup, member: ProxyGroupMember): BadgeVariant {
+  const snapshot = memberScoreSnapshot(group, member)
+  if (snapshot?.available) return 'success'
+  if (!member.enabled || snapshot?.hard_state === 'disabled') return 'secondary'
+  return 'warning'
+}
+
+function scoreReasonBrief(group: ProxyGroup, member: ProxyGroupMember) {
+  const reason = memberScoreSnapshot(group, member)?.score_reason
+  if (!reason || typeof reason !== 'object') return '暂无评分原因'
+  const record = reason as Record<string, unknown>
+  const parts: string[] = []
+  const manual = record.manual_weight
+  const latency = record.latency_ms ?? record.avg_latency_ms
+  const failureRateValue = record.failure_rate
+  const activeConnections = record.active_connections
+  if (manual != null) parts.push(`权重 ${manual}`)
+  if (latency != null) parts.push(`延迟 ${latency}ms`)
+  if (failureRateValue != null) parts.push(`失败率 ${formatReasonPercent(failureRateValue)}`)
+  if (activeConnections != null) parts.push(`负载 ${activeConnections}`)
+  return parts.length > 0 ? parts.join(' · ') : JSON.stringify(record)
+}
+
+function formatReasonPercent(value: unknown) {
+  const n = Number(value)
+  if (!Number.isFinite(n)) return String(value)
+  return `${(n * 100).toFixed(1)}%`
+}
+
+function scoreReasonTitle(group: ProxyGroup, member: ProxyGroupMember) {
+  const reason = memberScoreSnapshot(group, member)?.score_reason
+  if (!reason || typeof reason !== 'object') return '暂无评分原因'
+  return JSON.stringify(reason, null, 2)
+}
+
+function proxyGroupStrategyLabel(strategy: string) {
+  return proxyGroupStrategyOptions.find(option => option.value === strategy)?.label || strategy || '-'
+}
+
+function proxyGroupStrategyUsesTopN(strategy: string) {
+  return strategy === 'balanced_weighted' || strategy === 'success_rate'
+}
+
+function groupTopNLabel(group: ProxyGroup) {
+  return proxyGroupStrategyUsesTopN(group.strategy) ? String(group.top_n) : '-'
+}
+
+function groupBestMemberLabel(group: ProxyGroup) {
+  const best = group.current_best_member
+  if (!best) return '-'
+  const name = best.node?.name || best.node_id
+  return `${name} · ${formatScore(best.effective_score)}`
+}
+
+function groupRecentErrorLabel(group: ProxyGroup) {
+  if (!group.recent_error_summary.length) return '-'
+  return group.recent_error_summary.slice(0, 2).join('；')
 }
 
 async function handleDelete(node: ProxyNode) {

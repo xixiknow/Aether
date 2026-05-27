@@ -34,6 +34,7 @@ pub(crate) use self::cache::{
     PROVIDER_TRANSPORT_SNAPSHOT_CACHE_TTL,
 };
 pub use self::cors::FrontdoorCorsConfig;
+pub(crate) use self::proxy::ProxyGroupMemberScoreSnapshot;
 pub(crate) use self::types::{
     AdminWalletMutationOutcome, GatewayAdminPaymentCallbackView, GatewayUserPreferenceView,
     GatewayUserSessionView, LocalExecutionRuntimeMissDiagnostic, LocalMutationOutcome,

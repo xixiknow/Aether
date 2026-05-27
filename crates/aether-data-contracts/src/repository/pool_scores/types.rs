@@ -1,9 +1,13 @@
 use async_trait::async_trait;
 
 pub const POOL_KIND_PROVIDER_KEY_POOL: &str = "provider_key_pool";
+pub const POOL_KIND_PROXY_GROUP: &str = "proxy_group";
 pub const POOL_MEMBER_KIND_PROVIDER_API_KEY: &str = "provider_api_key";
+pub const POOL_MEMBER_KIND_PROXY_NODE: &str = "proxy_node";
 pub const POOL_SCORE_CAPABILITY_ACCOUNT: &str = "account";
+pub const POOL_SCORE_CAPABILITY_PROXY: &str = "proxy";
 pub const POOL_SCORE_SCOPE_KIND_ACCOUNT: &str = "account";
+pub const POOL_SCORE_SCOPE_KIND_PROXY_GROUP: &str = "proxy_group";
 pub const POOL_SCORE_CAPABILITY_API_FORMAT: &str = POOL_SCORE_CAPABILITY_ACCOUNT;
 pub const POOL_SCORE_SCOPE_KIND_MODEL: &str = POOL_SCORE_SCOPE_KIND_ACCOUNT;
 
@@ -113,6 +117,15 @@ impl PoolMemberIdentity {
             pool_id: provider_id.into(),
             member_kind: POOL_MEMBER_KIND_PROVIDER_API_KEY.to_string(),
             member_id: key_id.into(),
+        }
+    }
+
+    pub fn proxy_group_member(group_id: impl Into<String>, node_id: impl Into<String>) -> Self {
+        Self {
+            pool_kind: POOL_KIND_PROXY_GROUP.to_string(),
+            pool_id: group_id.into(),
+            member_kind: POOL_MEMBER_KIND_PROXY_NODE.to_string(),
+            member_id: node_id.into(),
         }
     }
 }

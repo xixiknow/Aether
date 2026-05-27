@@ -57,6 +57,27 @@ impl<'a> AdminAppState<'a> {
         self.app.list_proxy_nodes().await
     }
 
+    pub(crate) async fn list_proxy_groups(
+        &self,
+    ) -> Result<Vec<aether_data::repository::proxy_nodes::StoredProxyGroup>, GatewayError> {
+        self.app.list_proxy_groups().await
+    }
+
+    pub(crate) async fn find_proxy_group(
+        &self,
+        group_id: &str,
+    ) -> Result<Option<aether_data::repository::proxy_nodes::StoredProxyGroup>, GatewayError> {
+        self.app.find_proxy_group(group_id).await
+    }
+
+    pub(crate) async fn list_proxy_group_members(
+        &self,
+        group_id: &str,
+    ) -> Result<Vec<aether_data::repository::proxy_nodes::StoredProxyGroupMember>, GatewayError>
+    {
+        self.app.list_proxy_group_members(group_id).await
+    }
+
     pub(crate) async fn read_admin_system_stats(
         &self,
     ) -> Result<aether_data::repository::system::AdminSystemStats, GatewayError> {

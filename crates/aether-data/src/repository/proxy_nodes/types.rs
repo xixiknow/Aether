@@ -1,6 +1,8 @@
 use async_trait::async_trait;
 use serde_json::Value;
 
+pub const DEFAULT_PROXY_GROUP_STRATEGY: &str = "balanced_weighted";
+
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct StoredProxyNode {
     pub id: String,
@@ -32,6 +34,132 @@ pub struct StoredProxyNode {
     pub config_version: i32,
     pub created_at_unix_ms: Option<u64>,
     pub updated_at_unix_secs: Option<u64>,
+}
+
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct StoredProxyGroup {
+    pub id: String,
+    pub name: String,
+    pub description: Option<String>,
+    pub enabled: bool,
+    pub strategy: String,
+    pub top_n: i32,
+    pub created_at_unix_secs: Option<u64>,
+    pub updated_at_unix_secs: Option<u64>,
+}
+
+impl StoredProxyGroup {
+    pub fn new(
+        id: String,
+        name: String,
+        enabled: bool,
+        strategy: String,
+        top_n: i32,
+    ) -> Result<Self, crate::DataLayerError> {
+        if id.trim().is_empty() {
+            return Err(crate::DataLayerError::UnexpectedValue(
+                "proxy_groups.id is empty".to_string(),
+            ));
+        }
+        if name.trim().is_empty() {
+            return Err(crate::DataLayerError::UnexpectedValue(
+                "proxy_groups.name is empty".to_string(),
+            ));
+        }
+        if strategy.trim().is_empty() {
+            return Err(crate::DataLayerError::UnexpectedValue(
+                "proxy_groups.strategy is empty".to_string(),
+            ));
+        }
+        if top_n < 1 {
+            return Err(crate::DataLayerError::UnexpectedValue(
+                "proxy_groups.top_n must be positive".to_string(),
+            ));
+        }
+
+        Ok(Self {
+            id,
+            name,
+            description: None,
+            enabled,
+            strategy,
+            top_n,
+            created_at_unix_secs: None,
+            updated_at_unix_secs: None,
+        })
+    }
+
+    pub fn with_description(mut self, description: Option<String>) -> Self {
+        self.description = description;
+        self
+    }
+
+    pub fn with_timestamps(
+        mut self,
+        created_at_unix_secs: Option<u64>,
+        updated_at_unix_secs: Option<u64>,
+    ) -> Self {
+        self.created_at_unix_secs = created_at_unix_secs;
+        self.updated_at_unix_secs = updated_at_unix_secs;
+        self
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct StoredProxyGroupMember {
+    pub group_id: String,
+    pub node_id: String,
+    pub enabled: bool,
+    pub manual_weight: f64,
+    pub sort_index: i32,
+    pub created_at_unix_secs: Option<u64>,
+    pub updated_at_unix_secs: Option<u64>,
+}
+
+impl StoredProxyGroupMember {
+    pub fn new(
+        group_id: String,
+        node_id: String,
+        enabled: bool,
+        manual_weight: f64,
+        sort_index: i32,
+    ) -> Result<Self, crate::DataLayerError> {
+        if group_id.trim().is_empty() {
+            return Err(crate::DataLayerError::UnexpectedValue(
+                "proxy_group_members.group_id is empty".to_string(),
+            ));
+        }
+        if node_id.trim().is_empty() {
+            return Err(crate::DataLayerError::UnexpectedValue(
+                "proxy_group_members.node_id is empty".to_string(),
+            ));
+        }
+        if !manual_weight.is_finite() {
+            return Err(crate::DataLayerError::UnexpectedValue(
+                "proxy_group_members.manual_weight must be finite".to_string(),
+            ));
+        }
+
+        Ok(Self {
+            group_id,
+            node_id,
+            enabled,
+            manual_weight,
+            sort_index,
+            created_at_unix_secs: None,
+            updated_at_unix_secs: None,
+        })
+    }
+
+    pub fn with_timestamps(
+        mut self,
+        created_at_unix_secs: Option<u64>,
+        updated_at_unix_secs: Option<u64>,
+    ) -> Self {
+        self.created_at_unix_secs = created_at_unix_secs;
+        self.updated_at_unix_secs = updated_at_unix_secs;
+        self
+    }
 }
 
 impl StoredProxyNode {
@@ -212,6 +340,43 @@ pub struct ProxyNodeManualUpdateMutation {
     pub proxy_url: Option<String>,
     pub proxy_username: Option<String>,
     pub proxy_password: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct ProxyGroupCreateMutation {
+    pub name: String,
+    pub description: Option<String>,
+    pub enabled: Option<bool>,
+    pub strategy: Option<String>,
+    pub top_n: Option<i32>,
+}
+
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct ProxyGroupUpdateMutation {
+    pub group_id: String,
+    pub name: Option<String>,
+    pub description: Option<Option<String>>,
+    pub enabled: Option<bool>,
+    pub strategy: Option<String>,
+    pub top_n: Option<i32>,
+}
+
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct ProxyGroupMemberUpsertMutation {
+    pub group_id: String,
+    pub node_id: String,
+    pub enabled: Option<bool>,
+    pub manual_weight: Option<f64>,
+    pub sort_index: Option<i32>,
+}
+
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct ProxyGroupMemberUpdateMutation {
+    pub group_id: String,
+    pub node_id: String,
+    pub enabled: Option<bool>,
+    pub manual_weight: Option<f64>,
+    pub sort_index: Option<i32>,
 }
 
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
@@ -686,6 +851,18 @@ pub trait ProxyNodeReadRepository: Send + Sync {
         node_id: &str,
     ) -> Result<Option<StoredProxyNode>, crate::DataLayerError>;
 
+    async fn list_proxy_groups(&self) -> Result<Vec<StoredProxyGroup>, crate::DataLayerError>;
+
+    async fn find_proxy_group(
+        &self,
+        group_id: &str,
+    ) -> Result<Option<StoredProxyGroup>, crate::DataLayerError>;
+
+    async fn list_proxy_group_members(
+        &self,
+        group_id: &str,
+    ) -> Result<Vec<StoredProxyGroupMember>, crate::DataLayerError>;
+
     async fn list_proxy_node_events(
         &self,
         node_id: &str,
@@ -742,6 +919,37 @@ pub trait ProxyNodeWriteRepository: Send + Sync {
         &self,
         mutation: &ProxyNodeManualUpdateMutation,
     ) -> Result<Option<StoredProxyNode>, crate::DataLayerError>;
+
+    async fn create_proxy_group(
+        &self,
+        mutation: &ProxyGroupCreateMutation,
+    ) -> Result<StoredProxyGroup, crate::DataLayerError>;
+
+    async fn update_proxy_group(
+        &self,
+        mutation: &ProxyGroupUpdateMutation,
+    ) -> Result<Option<StoredProxyGroup>, crate::DataLayerError>;
+
+    async fn delete_proxy_group(
+        &self,
+        group_id: &str,
+    ) -> Result<Option<StoredProxyGroup>, crate::DataLayerError>;
+
+    async fn upsert_proxy_group_member(
+        &self,
+        mutation: &ProxyGroupMemberUpsertMutation,
+    ) -> Result<StoredProxyGroupMember, crate::DataLayerError>;
+
+    async fn update_proxy_group_member(
+        &self,
+        mutation: &ProxyGroupMemberUpdateMutation,
+    ) -> Result<Option<StoredProxyGroupMember>, crate::DataLayerError>;
+
+    async fn delete_proxy_group_member(
+        &self,
+        group_id: &str,
+        node_id: &str,
+    ) -> Result<Option<StoredProxyGroupMember>, crate::DataLayerError>;
 
     async fn register_node(
         &self,

@@ -61,7 +61,7 @@
                       variant="ghost"
                       size="icon"
                       class="h-7 w-7"
-                      :class="endpointProxyNodeId(endpoint) ? 'text-blue-500' : ''"
+                      :class="endpointProxyTargetValue(endpoint) ? 'text-blue-500' : ''"
                       :disabled="savingEndpointId === endpoint.id"
                       :title="getEndpointProxyTitle(endpoint)"
                     >
@@ -75,9 +75,9 @@
                   >
                     <div class="space-y-2">
                       <div class="flex items-center justify-between">
-                        <span class="text-xs font-medium">端点代理节点</span>
+                        <span class="text-xs font-medium">端点代理目标</span>
                         <Button
-                          v-if="endpointProxyNodeId(endpoint)"
+                          v-if="endpointProxyTargetValue(endpoint)"
                           variant="ghost"
                           size="sm"
                           class="h-6 px-2 text-[10px] text-muted-foreground"
@@ -88,12 +88,13 @@
                         </Button>
                       </div>
                       <ProxyNodeSelect
-                        :model-value="endpointProxyNodeId(endpoint)"
+                        :model-value="endpointProxyTargetValue(endpoint)"
+                        include-groups
                         trigger-class="h-8"
                         @update:model-value="setEndpointProxy(endpoint, $event)"
                       />
                       <p class="text-[10px] text-muted-foreground">
-                        {{ endpointProxyNodeId(endpoint) ? '当前使用端点级代理' : '未设置时按提供商代理、系统代理继续兜底' }}
+                        {{ endpointProxyTargetValue(endpoint) ? '当前使用端点级代理目标' : '未设置时按提供商代理、系统代理继续兜底' }}
                       </p>
                     </div>
                   </PopoverContent>
@@ -1045,6 +1046,11 @@ import AlertDialog from '@/components/common/AlertDialog.vue'
 import EndpointConditionEditor from './EndpointConditionEditor.vue'
 import ProxyNodeSelect from './ProxyNodeSelect.vue'
 import { getDefaultEndpointPath, normalizeEndpointApiFormat } from './endpoint-default-paths'
+import {
+  getProxyTargetName as resolveProxyTargetName,
+  proxyPayloadFromTarget,
+  proxyTargetValue,
+} from '../utils/proxyTarget'
 import { useProxyNodesStore } from '@/stores/proxy-nodes'
 import {
   createEndpoint,
@@ -1893,21 +1899,17 @@ function getEndpointUpstreamStreamPolicy(endpoint: ProviderEndpoint): string {
   return 'auto'
 }
 
-function endpointProxyNodeId(endpoint: ProviderEndpoint): string {
-  if (endpoint.proxy?.enabled === false) return ''
-  return endpoint.proxy?.node_id?.trim() || ''
+function endpointProxyTargetValue(endpoint: ProviderEndpoint): string {
+  return proxyTargetValue(endpoint.proxy, { respectDisabled: true })
 }
 
-function getEndpointProxyNodeName(endpoint: ProviderEndpoint): string {
-  const nodeId = endpointProxyNodeId(endpoint)
-  if (!nodeId) return '未知节点'
-  const node = proxyNodesStore.nodes.find(n => n.id === nodeId)
-  return node ? node.name : `${nodeId.slice(0, 8)}...`
+function getEndpointProxyTargetName(endpoint: ProviderEndpoint): string {
+  return resolveProxyTargetName(endpoint.proxy, proxyNodesStore.groups, proxyNodesStore.nodes) || '未知代理'
 }
 
 function getEndpointProxyTitle(endpoint: ProviderEndpoint): string {
-  const nodeId = endpointProxyNodeId(endpoint)
-  return nodeId ? `端点代理: ${getEndpointProxyNodeName(endpoint)}` : '设置端点代理节点'
+  const target = endpointProxyTargetValue(endpoint)
+  return target ? `端点代理: ${getEndpointProxyTargetName(endpoint)}` : '设置端点代理目标'
 }
 
 function handleEndpointProxyPopoverToggle(endpointId: string, open: boolean) {
@@ -1923,14 +1925,14 @@ function replaceLocalEndpoint(updated: ProviderEndpoint) {
   )
 }
 
-async function setEndpointProxy(endpoint: ProviderEndpoint, nodeId: string) {
-  const normalizedNodeId = nodeId.trim()
-  if (!normalizedNodeId) return
+async function setEndpointProxy(endpoint: ProviderEndpoint, target: string) {
+  const normalizedTarget = target.trim()
+  if (!normalizedTarget) return
 
   savingEndpointId.value = endpoint.id
   try {
     const updated = await updateEndpoint(endpoint.id, {
-      proxy: { node_id: normalizedNodeId, enabled: true },
+      proxy: proxyPayloadFromTarget(normalizedTarget),
     })
     replaceLocalEndpoint(updated)
     endpointProxyPopoverOpen.value[endpoint.id] = false
