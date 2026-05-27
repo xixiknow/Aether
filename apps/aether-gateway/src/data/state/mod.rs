@@ -325,6 +325,7 @@ mod core;
 mod integrations;
 mod models;
 mod pool_scores;
+mod provider_catalog_cache;
 mod referrals;
 mod routing_profiles;
 mod runtime;
