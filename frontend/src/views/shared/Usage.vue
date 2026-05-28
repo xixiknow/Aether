@@ -149,6 +149,7 @@ import {
   IntervalTimelineCard
 } from '@/features/usage/components'
 import {
+  useActiveElapsedDisplayClock,
   useUsageData,
   getDateRangeFromPeriod
 } from '@/features/usage/composables'
@@ -441,7 +442,6 @@ const GLOBAL_AUTO_REFRESH_INTERVAL = 3000 // 3秒刷新一次（全局自动刷�
 const ACTIVE_ELAPSED_DISPLAY_INTERVAL = 250 // 共享显示时钟，避免每行单独动画
 const globalAutoRefresh = ref(false) // 全局自动刷新开关（默认关闭）
 const isPageVisible = ref(typeof document === 'undefined' ? true : !document.hidden)
-const displayNowMs = ref(Date.now())
 
 // 轮询活跃请求状态（轻量级，只更新状态变化的记录）
 
@@ -744,7 +744,7 @@ onUnmounted(() => {
   stopAutoRefresh()
   stopActiveDiscovery()
   stopGlobalAutoRefresh()
-  stopActiveElapsedDisplayTimer()
+  stopActiveElapsedDisplayClock()
 })
 
 // 用户页面的前端分页（后端一次性返回所有记录，前端分页+筛选）
@@ -768,50 +768,19 @@ const effectiveTotalRecords = computed(() => {
 // 显示的记录
 const displayRecords = computed(() => paginatedRecords.value)
 
-const hasVisibleActiveRecords = computed(() => {
-  return displayRecords.value.some((record) => {
-    const displayStatus = resolveDisplayRequestStatus(record)
-    return displayStatus === 'pending' || displayStatus === 'streaming'
-  })
+const {
+  calibratedDisplayNowMs,
+  stopActiveElapsedDisplayTimer,
+  syncActiveElapsedDisplayTimer,
+  stopActiveElapsedDisplayClock,
+} = useActiveElapsedDisplayClock({
+  records: displayRecords,
+  isPageVisible,
+  serverClockOffsetMs,
+  hasServerClockOffset,
+  resolveStatus: resolveDisplayRequestStatus,
+  intervalMs: ACTIVE_ELAPSED_DISPLAY_INTERVAL,
 })
-
-const calibratedDisplayNowMs = computed(() => {
-  return hasServerClockOffset.value
-    ? displayNowMs.value + serverClockOffsetMs.value
-    : displayNowMs.value
-})
-
-let activeElapsedDisplayTimer: ReturnType<typeof setInterval> | null = null
-
-function tickActiveElapsedDisplay() {
-  displayNowMs.value = Date.now()
-}
-
-function startActiveElapsedDisplayTimer() {
-  if (activeElapsedDisplayTimer) return
-  if (!isPageVisible.value || !hasVisibleActiveRecords.value) return
-  tickActiveElapsedDisplay()
-  activeElapsedDisplayTimer = setInterval(tickActiveElapsedDisplay, ACTIVE_ELAPSED_DISPLAY_INTERVAL)
-}
-
-function stopActiveElapsedDisplayTimer() {
-  if (activeElapsedDisplayTimer) {
-    clearInterval(activeElapsedDisplayTimer)
-    activeElapsedDisplayTimer = null
-  }
-}
-
-function syncActiveElapsedDisplayTimer() {
-  if (isPageVisible.value && hasVisibleActiveRecords.value) {
-    startActiveElapsedDisplayTimer()
-  } else {
-    stopActiveElapsedDisplayTimer()
-  }
-}
-
-watch(hasVisibleActiveRecords, () => {
-  syncActiveElapsedDisplayTimer()
-}, { immediate: true })
 
 const availableClientFamilies = computed(() => {
   const families = new Set<string>()
