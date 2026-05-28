@@ -134,7 +134,6 @@ export interface UsageRequestOptions {
 
 type UsageListResponse = ServerTimedPayload & {
   records?: unknown
-  server_now_unix_ms?: unknown
   pagination?: {
     total?: unknown
     limit?: unknown
@@ -379,7 +378,7 @@ export const usageApi = {
     const { params, pagination } = buildCurrentUserUsageParams(filters)
     const clientSendUnixMs = beginServerTimingSample()
     const response = await apiClient.get<UsageListResponse>('/api/users/me/usage', { params })
-    return normalizeUsageRecordPage(withServerTiming(response.data, clientSendUnixMs), pagination)
+    return normalizeUsageRecordPage(withServerTiming(response, clientSendUnixMs), pagination)
   },
 
   async getUsageStats(filters?: UsageFilters, options?: UsageRequestOptions): Promise<UsageStats> {
@@ -462,7 +461,7 @@ export const usageApi = {
     const recordsClientSendUnixMs = beginServerTimingSample()
     const recordsRequest = apiClient
       .get<UsageListResponse>('/api/admin/usage/records', { params: recordParams })
-      .then(response => withServerTiming(response.data, recordsClientSendUnixMs))
+      .then(response => withServerTiming(response, recordsClientSendUnixMs))
 
     const [statsResponse, recordsResponse] = await Promise.all([
       statsRequest,
@@ -503,7 +502,7 @@ export const usageApi = {
     return dedupedRequest(key, async () => {
       const clientSendUnixMs = beginServerTimingSample()
       const response = await apiClient.get('/api/admin/usage/records', { params })
-      return withServerTiming(response.data, clientSendUnixMs)
+      return withServerTiming(response, clientSendUnixMs)
     })
   },
 
@@ -571,7 +570,7 @@ export const usageApi = {
     }
     const clientSendUnixMs = beginServerTimingSample()
     const response = await apiClient.get('/api/admin/usage/active', { params })
-    return withServerTiming(response.data, clientSendUnixMs)
+    return withServerTiming(response, clientSendUnixMs)
   },
 
   /**

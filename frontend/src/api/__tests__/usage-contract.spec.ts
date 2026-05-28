@@ -132,8 +132,10 @@ describe('usageApi contract alignment', () => {
       }
       if (url === '/api/admin/usage/records') {
         return Promise.resolve({
+          headers: {
+            'x-aether-server-now-unix-ms': '10050',
+          },
           data: {
-            server_now_unix_ms: 10_050,
             records: [{ id: 'record-3' }],
             total: 1,
             limit: 25,
@@ -163,6 +165,7 @@ describe('usageApi contract alignment', () => {
       server_now_unix_ms: 10_050,
       client_send_unix_ms: 1_000,
       client_receive_unix_ms: 1_100,
+      round_trip_ms: 100,
     })
   })
 

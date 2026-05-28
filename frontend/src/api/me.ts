@@ -148,7 +148,6 @@ export interface ApiFormatSummary {
 
 // 使用统计响应接口
 export interface UsageResponse extends ServerTimedPayload {
-  server_now_unix_ms?: number
   total_requests: number
   total_input_tokens: number
   total_output_tokens: number
@@ -329,7 +328,7 @@ export const meApi = {
   }): Promise<UsageResponse> {
     const clientSendUnixMs = beginServerTimingSample()
     const response = await apiClient.get<UsageResponse>('/api/users/me/usage', { params })
-    return withServerTiming(response.data, clientSendUnixMs)
+    return withServerTiming(response, clientSendUnixMs)
   },
 
   // 获取活跃请求状态（用于轮询更新）
@@ -368,7 +367,7 @@ export const meApi = {
     const params = ids ? { ids } : {}
     const clientSendUnixMs = beginServerTimingSample()
     const response = await apiClient.get('/api/users/me/usage/active', { params })
-    return withServerTiming(response.data, clientSendUnixMs)
+    return withServerTiming(response, clientSendUnixMs)
   },
 
   // 获取可用的提供商
