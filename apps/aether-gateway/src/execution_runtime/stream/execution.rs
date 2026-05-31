@@ -65,7 +65,7 @@ use crate::execution_runtime::chatgpt_web_image::maybe_execute_chatgpt_web_image
 use crate::execution_runtime::grok::maybe_execute_grok_stream;
 use crate::execution_runtime::kiro_cache::{
     billed_input_tokens as kiro_billed_input_tokens, build_kiro_prompt_cache_profile,
-    estimate_kiro_prompt_input_tokens, kiro_prompt_cache_tracker,
+    compute_kiro_prompt_cache_usage, estimate_kiro_prompt_input_tokens, kiro_prompt_cache_tracker,
     kiro_simulated_cache_enabled_from_provider_config,
     kiro_simulated_cache_enabled_from_report_context, KiroPromptCacheUsage,
     KIRO_SIMULATED_CACHE_ENABLED_CONTEXT_FIELD,
@@ -402,7 +402,8 @@ async fn seed_kiro_simulated_cache_enabled(
     }
 }
 
-fn seed_kiro_report_context_prompt_cache_usage(
+async fn seed_kiro_report_context_prompt_cache_usage(
+    state: &AppState,
     plan: &ExecutionPlan,
     report_context: &mut Option<Value>,
 ) {
@@ -450,8 +451,12 @@ fn seed_kiro_report_context_prompt_cache_usage(
         return;
     };
 
-    let cache_usage = kiro_prompt_cache_tracker()
-        .compute_and_update(kiro_stream_cache_credential_id(plan), &profile);
+    let cache_usage = compute_kiro_prompt_cache_usage(
+        state.runtime_state(),
+        kiro_stream_cache_credential_id(plan),
+        &profile,
+    )
+    .await;
     if cache_usage.cache_creation_input_tokens == 0 && cache_usage.cache_read_input_tokens == 0 {
         return;
     }
@@ -1984,7 +1989,7 @@ async fn execute_stream_from_frame_stream(
     seed_kiro_report_context_input_tokens(&plan, &mut report_context);
     if status_code == 200 {
         seed_kiro_simulated_cache_enabled(state, &plan, &mut report_context).await;
-        seed_kiro_report_context_prompt_cache_usage(&plan, &mut report_context);
+        seed_kiro_report_context_prompt_cache_usage(state, &plan, &mut report_context).await;
     }
     let mut buffered_frames = VecDeque::new();
     let mut stream_terminal_summary: Option<ExecutionStreamTerminalSummary> = None;
@@ -4741,9 +4746,11 @@ mod tests {
             "original_request_body": request_body,
             "kiro_simulated_cache_enabled": true,
         }));
+        let state = AppState::new().expect("gateway state should build");
 
         super::seed_kiro_report_context_input_tokens(&plan, &mut report_context);
-        super::seed_kiro_report_context_prompt_cache_usage(&plan, &mut report_context);
+        super::seed_kiro_report_context_prompt_cache_usage(&state, &plan, &mut report_context)
+            .await;
 
         let context = report_context.as_ref().expect("context should exist");
         assert!(context
@@ -4810,9 +4817,11 @@ mod tests {
         let mut report_context = Some(json!({
             "original_request_body": request_body,
         }));
+        let state = AppState::new().expect("gateway state should build");
 
         super::seed_kiro_report_context_input_tokens(&plan, &mut report_context);
-        super::seed_kiro_report_context_prompt_cache_usage(&plan, &mut report_context);
+        super::seed_kiro_report_context_prompt_cache_usage(&state, &plan, &mut report_context)
+            .await;
 
         let context = report_context.as_ref().expect("context should exist");
         assert!(context

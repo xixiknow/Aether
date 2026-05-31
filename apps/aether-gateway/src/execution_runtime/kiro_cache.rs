@@ -1,9 +1,13 @@
 use std::collections::{BTreeMap, HashMap};
+use std::fmt::Write as _;
 use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
+use aether_runtime_state::{DataLayerError, RuntimeState};
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
+use tracing::warn;
 
 const DEFAULT_CACHE_TTL: Duration = Duration::from_secs(300);
 const ONE_HOUR_CACHE_TTL: Duration = Duration::from_secs(3600);
@@ -38,6 +42,12 @@ struct KiroPromptCacheEntry {
     expires_at: Instant,
 }
 
+#[derive(Debug, Clone, Copy, Deserialize, Serialize)]
+struct KiroPromptCacheRuntimeEntry {
+    token_count: u64,
+    ttl_secs: u64,
+}
+
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub(crate) struct KiroPromptCacheUsage {
     pub(crate) cache_creation_input_tokens: u64,
@@ -64,6 +74,153 @@ struct KiroPromptCacheCandidate {
 
 pub(crate) fn kiro_prompt_cache_tracker() -> &'static KiroPromptCacheTracker {
     KIRO_PROMPT_CACHE_TRACKER.get_or_init(KiroPromptCacheTracker::default)
+}
+
+pub(crate) async fn compute_kiro_prompt_cache_usage(
+    runtime_state: &RuntimeState,
+    credential_id: String,
+    profile: &KiroPromptCacheProfile,
+) -> KiroPromptCacheUsage {
+    match compute_kiro_prompt_cache_usage_with_runtime_state(
+        runtime_state,
+        credential_id.as_str(),
+        profile,
+    )
+    .await
+    {
+        Ok(usage) => usage,
+        Err(err) => {
+            warn!(
+                event_name = "kiro_simulated_cache_runtime_state_failed",
+                log_type = "event",
+                error = ?err,
+                "failed to update Kiro simulated cache runtime state; falling back to process-local tracker"
+            );
+            kiro_prompt_cache_tracker().compute_and_update(credential_id, profile)
+        }
+    }
+}
+
+async fn compute_kiro_prompt_cache_usage_with_runtime_state(
+    runtime_state: &RuntimeState,
+    credential_id: &str,
+    profile: &KiroPromptCacheProfile,
+) -> Result<KiroPromptCacheUsage, DataLayerError> {
+    let last_breakpoint = match profile.breakpoints.last().copied() {
+        Some(last_breakpoint) => last_breakpoint,
+        None => return Ok(KiroPromptCacheUsage::default()),
+    };
+
+    let reversed_candidates = profile
+        .match_candidates
+        .iter()
+        .rev()
+        .copied()
+        .collect::<Vec<_>>();
+    let candidate_keys = reversed_candidates
+        .iter()
+        .map(|candidate| kiro_prompt_cache_runtime_key(credential_id, &candidate.fingerprint))
+        .collect::<Vec<_>>();
+    let candidate_values = runtime_state.kv_get_many(&candidate_keys).await?;
+    let mut existing_entries = HashMap::<String, KiroPromptCacheRuntimeEntry>::new();
+    let mut matched_tokens = 0u64;
+    let mut matched_refresh: Option<(String, KiroPromptCacheRuntimeEntry)> = None;
+
+    for ((candidate, key), value) in reversed_candidates
+        .iter()
+        .zip(candidate_keys.iter())
+        .zip(candidate_values)
+    {
+        let Some(entry) = value
+            .as_deref()
+            .and_then(parse_kiro_prompt_cache_runtime_entry)
+        else {
+            continue;
+        };
+        existing_entries.insert(key.clone(), entry);
+        if matched_tokens == 0 {
+            matched_tokens = entry
+                .token_count
+                .min(candidate.cumulative_tokens)
+                .min(profile.total_input_tokens);
+            matched_refresh = Some((key.clone(), entry));
+        }
+    }
+
+    if let Some((key, entry)) = matched_refresh {
+        runtime_state
+            .kv_set(
+                key.as_str(),
+                encode_kiro_prompt_cache_runtime_entry(entry),
+                Some(Duration::from_secs(entry.ttl_secs.max(1))),
+            )
+            .await?;
+    }
+
+    let creation_tokens = last_breakpoint
+        .cumulative_tokens
+        .min(profile.total_input_tokens)
+        .saturating_sub(matched_tokens);
+
+    for breakpoint in &profile.breakpoints {
+        let key = kiro_prompt_cache_runtime_key(credential_id, &breakpoint.fingerprint);
+        let ttl_secs = breakpoint.ttl.as_secs().max(1);
+        let entry = existing_entries
+            .get(&key)
+            .copied()
+            .map(|existing| KiroPromptCacheRuntimeEntry {
+                token_count: existing.token_count.max(breakpoint.cumulative_tokens),
+                ttl_secs: existing.ttl_secs.max(ttl_secs),
+            })
+            .unwrap_or(KiroPromptCacheRuntimeEntry {
+                token_count: breakpoint.cumulative_tokens,
+                ttl_secs,
+            });
+        runtime_state
+            .kv_set(
+                key.as_str(),
+                encode_kiro_prompt_cache_runtime_entry(entry),
+                Some(Duration::from_secs(entry.ttl_secs.max(1))),
+            )
+            .await?;
+    }
+
+    Ok(KiroPromptCacheUsage {
+        cache_creation_input_tokens: creation_tokens,
+        cache_read_input_tokens: matched_tokens,
+    })
+}
+
+fn parse_kiro_prompt_cache_runtime_entry(value: &str) -> Option<KiroPromptCacheRuntimeEntry> {
+    serde_json::from_str::<KiroPromptCacheRuntimeEntry>(value)
+        .ok()
+        .filter(|entry| entry.token_count > 0 && entry.ttl_secs > 0)
+}
+
+fn encode_kiro_prompt_cache_runtime_entry(entry: KiroPromptCacheRuntimeEntry) -> String {
+    serde_json::to_string(&entry).unwrap_or_else(|_| {
+        format!(
+            r#"{{"token_count":{},"ttl_secs":{}}}"#,
+            entry.token_count, entry.ttl_secs
+        )
+    })
+}
+
+fn kiro_prompt_cache_runtime_key(credential_id: &str, fingerprint: &[u8; 32]) -> String {
+    let credential_hash: [u8; 32] = Sha256::digest(credential_id.as_bytes()).into();
+    format!(
+        "kiro:prompt-cache:{}:{}",
+        hex_digest(&credential_hash),
+        hex_digest(fingerprint)
+    )
+}
+
+fn hex_digest(bytes: &[u8]) -> String {
+    let mut output = String::with_capacity(bytes.len() * 2);
+    for byte in bytes {
+        let _ = write!(&mut output, "{byte:02x}");
+    }
+    output
 }
 
 pub(crate) fn build_kiro_prompt_cache_profile(
@@ -705,6 +862,7 @@ impl KiroPromptCacheTracker {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use aether_runtime_state::MemoryRuntimeStateConfig;
 
     fn long_text(label: &str) -> String {
         format!("{} {}", label, "cacheable prompt chunk ".repeat(300))
@@ -800,6 +958,33 @@ mod tests {
 
         assert_eq!(profile.breakpoints.len(), 1);
         assert!(profile.breakpoints[0].cumulative_tokens < profile.total_input_tokens);
+    }
+
+    #[tokio::test]
+    async fn runtime_state_tracker_reads_cached_prefix_across_calls() {
+        let request = serde_json::json!({
+            "model": "claude-sonnet-4.6",
+            "system": [{
+                "type": "text",
+                "text": long_text("runtime shared system"),
+                "cache_control": {"type": "ephemeral"}
+            }],
+            "messages": [{"role": "user", "content": "reuse runtime cache"}]
+        });
+        let profile =
+            build_kiro_prompt_cache_profile(&request, estimate_kiro_prompt_input_tokens(&request))
+                .expect("cacheable request should create a cache profile");
+        let runtime = RuntimeState::memory(MemoryRuntimeStateConfig::default());
+
+        let first =
+            compute_kiro_prompt_cache_usage(&runtime, "runtime-cred".to_string(), &profile).await;
+        let second =
+            compute_kiro_prompt_cache_usage(&runtime, "runtime-cred".to_string(), &profile).await;
+
+        assert!(first.cache_creation_input_tokens > 0);
+        assert_eq!(first.cache_read_input_tokens, 0);
+        assert_eq!(second.cache_creation_input_tokens, 0);
+        assert!(second.cache_read_input_tokens > 0);
     }
 
     #[test]
