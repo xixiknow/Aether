@@ -23,6 +23,8 @@ use serde_json::json;
 use std::collections::{BTreeMap, BTreeSet};
 use std::time::{SystemTime, UNIX_EPOCH};
 
+const USER_CANCELLED_STATUS_CODE: u16 = 499;
+
 pub(crate) fn request_candidate_status_label(status: RequestCandidateStatus) -> &'static str {
     match status {
         RequestCandidateStatus::Available => "available",
@@ -576,6 +578,7 @@ pub(crate) async fn build_model_health_monitor_payload(
             created_until_unix_secs: now_unix_secs,
             user_id: None,
             provider_name: None,
+            exclude_status_codes: vec![USER_CANCELLED_STATUS_CODE],
             group_by: UsageBreakdownGroupBy::Model,
         })
         .await
@@ -595,6 +598,7 @@ pub(crate) async fn build_model_health_monitor_payload(
                 created_from_unix_secs: Some(since_unix_secs),
                 created_until_unix_secs: Some(now_unix_secs),
                 model: Some(row.group_key.clone()),
+                exclude_status_codes: vec![USER_CANCELLED_STATUS_CODE],
                 limit: Some(per_model_limit),
                 newest_first: true,
                 ..UsageAuditListQuery::default()
@@ -640,6 +644,7 @@ pub(crate) async fn build_model_health_monitor_payload(
             "success_rate": success_rate,
             "avg_latency_ms": avg_latency_ms,
             "avg_first_byte_ms": first_byte_average,
+            "avg_tps": model_health_average_tps(&row),
             "last_event_at": last_event_at,
             "events": event_payload,
             "timeline": timeline,
@@ -691,6 +696,7 @@ pub(crate) async fn build_provider_health_monitor_payload(
             created_until_unix_secs: now_unix_secs,
             user_id: None,
             provider_name: None,
+            exclude_status_codes: vec![USER_CANCELLED_STATUS_CODE],
             group_by: UsageBreakdownGroupBy::Provider,
         })
         .await
@@ -754,6 +760,7 @@ async fn build_provider_health_payload(
             created_until_unix_secs: now_unix_secs,
             user_id: None,
             provider_name: Some(provider.name.clone()),
+            exclude_status_codes: vec![USER_CANCELLED_STATUS_CODE],
             group_by: UsageBreakdownGroupBy::Model,
         })
         .await
@@ -768,6 +775,7 @@ async fn build_provider_health_payload(
             created_from_unix_secs: Some(since_unix_secs),
             created_until_unix_secs: Some(now_unix_secs),
             provider_name: Some(provider.name.clone()),
+            exclude_status_codes: vec![USER_CANCELLED_STATUS_CODE],
             limit: Some(provider_event_limit),
             newest_first: true,
             ..UsageAuditListQuery::default()
@@ -804,7 +812,7 @@ async fn build_provider_health_payload(
         ));
     }
 
-    let (total_attempts, success_count, failed_count, success_rate, avg_latency_ms) =
+    let (total_attempts, success_count, failed_count, success_rate, avg_latency_ms, avg_tps) =
         if let Some(row) = provider_stats {
             let total_attempts = row.request_count;
             let success_count = row.success_count.min(total_attempts);
@@ -820,9 +828,10 @@ async fn build_provider_health_payload(
                 failed_count,
                 success_rate,
                 model_health_average_latency_ms(row),
+                model_health_average_tps(row),
             )
         } else {
-            (0, 0, 0, 1.0, None)
+            (0, 0, 0, 1.0, None, None)
         };
 
     let (timeline, time_range_start, time_range_end) = build_model_health_timeline(
@@ -847,6 +856,7 @@ async fn build_provider_health_payload(
         "success_rate": success_rate,
         "avg_latency_ms": avg_latency_ms,
         "avg_first_byte_ms": model_health_average_first_byte_ms(&provider_events),
+        "avg_tps": avg_tps,
         "model_count": model_breakdown.len(),
         "last_event_at": last_event_at,
         "timeline": timeline,
@@ -917,6 +927,7 @@ fn model_health_payload_from_row(
         "success_rate": success_rate,
         "avg_latency_ms": model_health_average_latency_ms(row),
         "avg_first_byte_ms": model_health_average_first_byte_ms(events),
+        "avg_tps": model_health_average_tps(row),
         "last_event_at": last_event_at,
         "events": event_payload,
         "timeline": timeline,
@@ -937,6 +948,13 @@ fn model_health_average_latency_ms(row: &StoredUsageBreakdownSummaryRow) -> Opti
         return Some(row.response_time_sum_ms / row.response_time_samples as f64);
     }
     None
+}
+
+fn model_health_average_tps(row: &StoredUsageBreakdownSummaryRow) -> Option<f64> {
+    if row.output_tokens == 0 || row.response_time_sum_ms <= 0.0 {
+        return None;
+    }
+    Some(row.output_tokens as f64 / (row.response_time_sum_ms / 1000.0))
 }
 
 fn model_health_average_first_byte_ms(events: &[StoredRequestUsageAudit]) -> Option<f64> {

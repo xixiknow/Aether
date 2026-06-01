@@ -731,6 +731,7 @@ pub struct UsageAuditListQuery {
     pub model: Option<String>,
     pub api_format: Option<String>,
     pub statuses: Option<Vec<String>>,
+    pub exclude_status_codes: Vec<u16>,
     pub is_stream: Option<bool>,
     pub error_only: bool,
     pub limit: Option<usize>,
@@ -747,6 +748,7 @@ pub struct UsageAuditKeywordSearchQuery {
     pub model: Option<String>,
     pub api_format: Option<String>,
     pub statuses: Option<Vec<String>>,
+    pub exclude_status_codes: Vec<u16>,
     pub is_stream: Option<bool>,
     pub error_only: bool,
     pub keywords: Vec<String>,
@@ -986,6 +988,7 @@ pub struct UsageBreakdownSummaryQuery {
     pub created_until_unix_secs: u64,
     pub user_id: Option<String>,
     pub provider_name: Option<String>,
+    pub exclude_status_codes: Vec<u16>,
     pub group_by: UsageBreakdownGroupBy,
 }
 

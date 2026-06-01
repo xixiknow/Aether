@@ -631,6 +631,7 @@ export interface ModelStatusMonitor {
   success_rate: number
   avg_latency_ms?: number | null
   avg_first_byte_ms?: number | null
+  avg_tps?: number | null
   provider_count?: number
   last_event_at?: string | null
   events: ModelHealthEvent[]
@@ -655,6 +656,7 @@ export interface ProviderStatusMonitor {
   success_rate: number
   avg_latency_ms?: number | null
   avg_first_byte_ms?: number | null
+  avg_tps?: number | null
   model_count: number
   last_event_at?: string | null
   timeline?: string[]

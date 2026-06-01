@@ -486,6 +486,7 @@ fn build_admin_usage_keyword_search_query(
         model: base_query.model.clone(),
         api_format: base_query.api_format.clone(),
         statuses: base_query.statuses.clone(),
+        exclude_status_codes: base_query.exclude_status_codes.clone(),
         is_stream: base_query.is_stream,
         error_only: base_query.error_only,
         keywords,

@@ -263,6 +263,12 @@ fn usage_matches_list_query(item: &StoredRequestUsageAudit, query: &UsageAuditLi
             return false;
         }
     }
+    if item
+        .status_code
+        .is_some_and(|status_code| query.exclude_status_codes.contains(&status_code))
+    {
+        return false;
+    }
     if let Some(is_stream) = query.is_stream {
         if item.is_stream != is_stream {
             return false;
@@ -322,6 +328,12 @@ fn usage_matches_keyword_search_query(
         if !statuses.iter().any(|status| status == &item.status) {
             return false;
         }
+    }
+    if item
+        .status_code
+        .is_some_and(|status_code| query.exclude_status_codes.contains(&status_code))
+    {
+        return false;
     }
     if let Some(is_stream) = query.is_stream {
         if item.is_stream != is_stream {
@@ -539,6 +551,12 @@ fn usage_matches_breakdown_summary_query(
         if item.provider_name != provider_name {
             return false;
         }
+    }
+    if item
+        .status_code
+        .is_some_and(|status_code| query.exclude_status_codes.contains(&status_code))
+    {
+        return false;
     }
     match query.group_by {
         UsageBreakdownGroupBy::Model | UsageBreakdownGroupBy::Provider => true,

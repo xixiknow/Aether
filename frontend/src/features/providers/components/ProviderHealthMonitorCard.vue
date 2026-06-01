@@ -109,14 +109,18 @@
                 </div>
               </div>
 
-              <div class="grid w-full grid-cols-3 gap-2 lg:max-w-xl">
+              <div class="grid w-full grid-cols-4 gap-2 lg:max-w-2xl">
                 <MetricBox
-                  label="延迟"
+                  label="平均耗时"
                   :value="formatMs(provider.avg_latency_ms)"
                 />
                 <MetricBox
-                  label="Ping"
+                  label="平均TTFB"
                   :value="formatMs(provider.avg_first_byte_ms)"
+                />
+                <MetricBox
+                  label="平均速度"
+                  :value="formatTps(provider.avg_tps)"
                 />
                 <MetricBox
                   label="可用率"
@@ -161,14 +165,18 @@
                   </Badge>
                 </div>
 
-                <div class="mt-4 grid grid-cols-3 gap-2">
+                <div class="mt-4 grid grid-cols-4 gap-2">
                   <MetricBox
-                    label="延迟"
+                    label="平均耗时"
                     :value="formatMs(model.avg_latency_ms)"
                   />
                   <MetricBox
-                    label="Ping"
+                    label="平均TTFB"
                     :value="formatMs(model.avg_first_byte_ms)"
+                  />
+                  <MetricBox
+                    label="平均速度"
+                    :value="formatTps(model.avg_tps)"
                   />
                   <MetricBox
                     label="可用率"
@@ -253,7 +261,7 @@ const MetricBox = defineComponent({
   },
   setup(props) {
     return () => h('div', { class: 'rounded-lg border border-border/40 bg-muted/20 px-3 py-2' }, [
-      h('div', { class: 'text-[11px] text-muted-foreground' }, props.label),
+      h('div', { class: 'text-[11px] leading-tight text-muted-foreground' }, props.label),
       h('div', { class: ['mt-1 text-sm font-semibold tabular-nums', props.valueClass] }, props.value)
     ])
   }
@@ -354,6 +362,13 @@ function formatDurationNumber(value: number) {
 function formatPercent(value: number) {
   if (typeof value !== 'number' || Number.isNaN(value)) return '-'
   return `${(value * 100).toFixed(2)}%`
+}
+
+function formatTps(value?: number | null) {
+  if (typeof value !== 'number' || Number.isNaN(value)) return '-'
+  return `${new Intl.NumberFormat('zh-CN', {
+    maximumFractionDigits: value < 10 ? 2 : value < 100 ? 1 : 0
+  }).format(value)} tps`
 }
 
 function formatCompactNumber(value: number) {
