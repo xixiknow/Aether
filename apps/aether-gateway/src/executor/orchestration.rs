@@ -92,6 +92,15 @@ pub(crate) async fn maybe_execute_sync_via_local_decision(
     body_json: &serde_json::Value,
     plan_kind: &str,
 ) -> Result<LocalExecutionRequestOutcome, GatewayError> {
+    let Some((attempt_source, candidate_count)) =
+        build_local_openai_chat_sync_attempt_source_for_kind(
+            state, parts, trace_id, decision, body_json, plan_kind,
+        )
+        .await?
+    else {
+        return Ok(LocalExecutionRequestOutcome::NoPath);
+    };
+
     if standard_text_sync_heartbeat_should_wrap(state, plan_kind).await {
         let parts_for_task = parts.clone();
         let body_json_for_task = body_json.clone();
@@ -150,15 +159,6 @@ pub(crate) async fn maybe_execute_sync_via_local_decision(
             )?,
         ));
     }
-
-    let Some((attempt_source, candidate_count)) =
-        build_local_openai_chat_sync_attempt_source_for_kind(
-            state, parts, trace_id, decision, body_json, plan_kind,
-        )
-        .await?
-    else {
-        return Ok(LocalExecutionRequestOutcome::NoPath);
-    };
 
     let outcome = execute_sync_attempt_source::<AiSyncAttempt, _>(
         state,
@@ -232,6 +232,15 @@ pub(crate) async fn maybe_execute_sync_via_local_openai_responses_decision(
     body_json: &serde_json::Value,
     plan_kind: &str,
 ) -> Result<LocalExecutionRequestOutcome, GatewayError> {
+    let Some((attempt_source, _candidate_count)) =
+        build_local_openai_responses_sync_attempt_source_for_kind(
+            state, parts, trace_id, decision, body_json, plan_kind,
+        )
+        .await?
+    else {
+        return Ok(LocalExecutionRequestOutcome::NoPath);
+    };
+
     if standard_text_sync_heartbeat_should_wrap(state, plan_kind).await {
         let parts_for_task = parts.clone();
         let body_json_for_task = body_json.clone();
@@ -283,15 +292,6 @@ pub(crate) async fn maybe_execute_sync_via_local_openai_responses_decision(
         ));
     }
 
-    let Some((attempt_source, _candidate_count)) =
-        build_local_openai_responses_sync_attempt_source_for_kind(
-            state, parts, trace_id, decision, body_json, plan_kind,
-        )
-        .await?
-    else {
-        return Ok(LocalExecutionRequestOutcome::NoPath);
-    };
-
     execute_sync_attempt_source::<AiSyncAttempt, _>(
         state,
         parts,
@@ -340,6 +340,14 @@ pub(crate) async fn maybe_execute_sync_via_standard_family_decision(
     resolve_sync_spec: fn(&str) -> Option<LocalStandardSpec>,
 ) -> Result<LocalExecutionRequestOutcome, GatewayError> {
     let Some(spec) = resolve_sync_spec(plan_kind) else {
+        return Ok(LocalExecutionRequestOutcome::NoPath);
+    };
+
+    let Some((attempt_source, _candidate_count)) = build_standard_family_sync_attempt_source(
+        state, parts, trace_id, decision, body_json, spec,
+    )
+    .await?
+    else {
         return Ok(LocalExecutionRequestOutcome::NoPath);
     };
 
@@ -393,14 +401,6 @@ pub(crate) async fn maybe_execute_sync_via_standard_family_decision(
             )?,
         ));
     }
-
-    let Some((attempt_source, _candidate_count)) = build_standard_family_sync_attempt_source(
-        state, parts, trace_id, decision, body_json, spec,
-    )
-    .await?
-    else {
-        return Ok(LocalExecutionRequestOutcome::NoPath);
-    };
 
     execute_sync_attempt_source::<AiSyncAttempt, _>(
         state,
@@ -558,6 +558,14 @@ pub(crate) async fn maybe_execute_sync_via_local_same_format_provider_decision(
         return Ok(LocalExecutionRequestOutcome::NoPath);
     };
 
+    let Some((attempt_source, _candidate_count)) = build_local_same_format_sync_attempt_source(
+        state, parts, trace_id, decision, body_json, spec,
+    )
+    .await?
+    else {
+        return Ok(LocalExecutionRequestOutcome::NoPath);
+    };
+
     if standard_text_sync_heartbeat_should_wrap(state, plan_kind).await {
         let parts_for_task = parts.clone();
         let body_json_for_task = body_json.clone();
@@ -608,14 +616,6 @@ pub(crate) async fn maybe_execute_sync_via_local_same_format_provider_decision(
             )?,
         ));
     }
-
-    let Some((attempt_source, _candidate_count)) = build_local_same_format_sync_attempt_source(
-        state, parts, trace_id, decision, body_json, spec,
-    )
-    .await?
-    else {
-        return Ok(LocalExecutionRequestOutcome::NoPath);
-    };
 
     execute_sync_attempt_source::<AiSyncAttempt, _>(
         state,
@@ -1774,6 +1774,37 @@ mod tests {
         let state = AppState::new().expect("state should build");
 
         assert!(!standard_text_sync_heartbeat_enabled(&state).await);
+    }
+
+    #[tokio::test]
+    async fn standard_text_sync_heartbeat_no_local_candidates_preserves_no_path() {
+        let state = AppState::new()
+            .expect("state should build")
+            .with_data_state_for_tests(
+                crate::data::GatewayDataState::disabled().with_system_config_values_for_tests([(
+                    ENABLE_STANDARD_TEXT_SYNC_HEARTBEAT_CONFIG_KEY.to_string(),
+                    json!(true),
+                )]),
+            );
+        let (parts, _) = http::Request::builder()
+            .method(http::Method::POST)
+            .uri("/v1/responses")
+            .body(())
+            .expect("request should build")
+            .into_parts();
+
+        let outcome = maybe_execute_sync_via_local_openai_responses_decision(
+            &state,
+            &parts,
+            "trace-standard-text-heartbeat-no-path",
+            &test_standard_text_heartbeat_decision(),
+            &json!({"model": "missing-local-candidate"}),
+            TEST_STANDARD_TEXT_SYNC_PLAN_KIND,
+        )
+        .await
+        .expect("heartbeat no-path check should execute");
+
+        assert!(matches!(outcome, LocalExecutionRequestOutcome::NoPath));
     }
 
     #[tokio::test]
