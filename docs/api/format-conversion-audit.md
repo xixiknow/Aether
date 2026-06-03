@@ -13,7 +13,9 @@ Statuses:
 - `lossy-blocked`: conversion fails closed.
 - `invalid-enum`: conversion fails closed because a provider enum value is not valid for the target mapping.
 
-Full schema field coverage is tracked in `docs/api/format-field-coverage-matrix.md`. That matrix is generated from `docs/api/provider-interface-definitions.md` by `python3 docs/api/generate_format_field_coverage.py` and gives every documented OpenAI, Claude, and Gemini schema field a handling status. “Handled” means mapped, same-format/native preserved, extension-preserved, blocked with a structured error, or explicitly marked outside the canonical conversion surface.
+Full schema field coverage is tracked in `docs/api/format-field-coverage-matrix.md`. That matrix is generated from the schema inventory in `docs/api/provider-interface-definitions.md` by `python3 docs/api/generate_format_field_coverage.py` and gives every documented OpenAI, Claude, and Gemini schema field a handling status. “Handled” means mapped, same-format/native preserved, extension-preserved, blocked with a structured error, or explicitly marked outside the canonical conversion surface.
+
+Provider schema refresh is not a runtime dependency. Same-format runtime paths do not use this matrix; they bypass canonical conversion. Same-format canonical roundtrip must preserve unrecognized provider fields through provider extension namespaces. Cross-format conversion is capability-based: only explicitly mapped fields are emitted, and newly discovered or unknown provider fields fail closed until a lossless mapping is audited.
 
 ## Implemented Boundary Changes
 
@@ -26,6 +28,7 @@ Full schema field coverage is tracked in `docs/api/format-field-coverage-matrix.
 | Conversion errors | Added `UnsupportedField`, `InvalidEnumValue`, `LossyConversionBlocked`, and `InvalidTargetField`. |
 | Reporting | Added `ConversionReport` with field statuses. Runtime reports remain conversion-operation oriented; exhaustive nested schema coverage is enforced by `format-field-coverage-matrix.md`. |
 | Source schema coverage | Cross-format request conversion rejects unknown source root fields before emit. Every documented schema field is covered by the field coverage matrix. |
+| Schema drift handling | Official schema changes are detected by regenerating the inventory/matrix. Runtime same-format remains passthrough; cross-format unknowns remain blocked until deliberately mapped. |
 | Tool schema roundtrip | Claude `input_schema` and Gemini `functionDeclarations.parameters` preserve raw same-format schema through provider-specific extensions. |
 | Tool result ids | Chat `tool_call_id`, Responses `call_id`, Claude `tool_use_id`, and Gemini `functionResponse.id` are mapped through canonical tool IDs. |
 

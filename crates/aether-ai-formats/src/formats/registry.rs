@@ -2786,6 +2786,59 @@ mod tests {
     }
 
     #[test]
+    fn same_format_canonical_roundtrip_preserves_future_root_fields() {
+        let cases = [
+            (
+                "openai:chat",
+                json!({
+                    "model": "gpt-source",
+                    "messages": [{"role": "user", "content": "hello"}],
+                    "future_field": {"enabled": true}
+                }),
+                "future_field",
+            ),
+            (
+                "openai:responses",
+                json!({
+                    "model": "gpt-source",
+                    "input": [{"role": "user", "content": "hello"}],
+                    "future_field": {"enabled": true}
+                }),
+                "future_field",
+            ),
+            (
+                "claude:messages",
+                json!({
+                    "model": "claude-source",
+                    "max_tokens": 1024,
+                    "messages": [{"role": "user", "content": "hello"}],
+                    "future_field": {"enabled": true}
+                }),
+                "future_field",
+            ),
+            (
+                "gemini:generate_content",
+                json!({
+                    "model": "gemini-source",
+                    "contents": [{"role": "user", "parts": [{"text": "hello"}]}],
+                    "futureField": {"enabled": true}
+                }),
+                "futureField",
+            ),
+        ];
+
+        for (format, body, field) in cases {
+            let converted = convert_request_pure(format, format, &body)
+                .unwrap_or_else(|err| panic!("{format} same-format roundtrip failed: {err}"));
+            assert_eq!(
+                converted.value.get(field),
+                body.get(field),
+                "{format} must preserve unknown provider root fields in canonical roundtrip"
+            );
+        }
+    }
+
+    #[test]
     fn pure_openai_chat_to_claude_blocks_target_unsupported_generation_field() {
         let body = json!({
             "model": "gpt-source",

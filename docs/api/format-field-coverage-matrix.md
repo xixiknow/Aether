@@ -2,7 +2,9 @@
 
 Last generated: 2026-06-03
 
-This file is generated from `docs/api/provider-interface-definitions.md` and gives every documented schema field an explicit handling status. “处理到” here means the field is either mapped, preserved in same-format paths, rejected with a structured fail-closed error, or explicitly outside the current conversion surface. It does not mean every field can be cross-format converted.
+This file is generated from the schema inventory in `docs/api/provider-interface-definitions.md` and gives every documented schema field an explicit handling status. “处理到” here means the field is either mapped, preserved in same-format paths, rejected with a structured fail-closed error, or explicitly outside the current conversion surface. It does not mean every field can be cross-format converted.
+
+Provider schema updates do not require immediate conversion-code changes for runtime safety. Same-format runtime paths bypass canonical conversion, and same-format canonical roundtrip preserves provider extension fields. Cross-format conversion only enables fields with an audited semantic mapping; newly discovered or unknown provider fields default to structured fail-closed behavior until mapped.
 
 Regenerate with: `python3 docs/api/generate_format_field_coverage.py`.
 

@@ -4582,8 +4582,28 @@ pub(crate) fn apply_gemini_request_extensions(
     if let Some(raw_tool_config) = gemini.get("raw_tool_config").cloned() {
         output_object.insert("toolConfig".to_string(), raw_tool_config);
     }
+    for (key, value) in gemini {
+        if GEMINI_REQUEST_EXTENSION_INTERNAL_KEYS.contains(&key.as_str()) {
+            continue;
+        }
+        output_object
+            .entry(key.clone())
+            .or_insert_with(|| value.clone());
+    }
     Some(())
 }
+
+const GEMINI_REQUEST_EXTENSION_INTERNAL_KEYS: &[&str] = &[
+    "builtin_tools",
+    "cached_content",
+    "generation_config_extra",
+    "grounding",
+    "raw_tool_config",
+    "raw_tools",
+    "response_modalities",
+    "safety_settings",
+    "thinking_config",
+];
 
 fn should_reuse_raw_gemini_tools(gemini: &Map<String, Value>) -> bool {
     let Some(google_search) = gemini
