@@ -795,13 +795,25 @@ pub(crate) fn canonical_tool_use_to_openai_responses_item(
             "input": openai_custom_tool_input_text(input),
         });
     }
+    let item_id = openai_responses_function_call_item_id(id);
     json!({
         "type": "function_call",
-        "id": id,
+        "id": item_id,
         "call_id": id,
         "name": name,
         "arguments": canonicalize_tool_arguments(input),
     })
+}
+
+fn openai_responses_function_call_item_id(call_id: &str) -> String {
+    let trimmed = call_id.trim();
+    if trimmed.starts_with("fc") {
+        trimmed.to_string()
+    } else if trimmed.is_empty() {
+        "fc_auto".to_string()
+    } else {
+        format!("fc_{trimmed}")
+    }
 }
 
 fn openai_responses_hosted_tool_call_item_type(
