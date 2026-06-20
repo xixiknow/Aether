@@ -841,7 +841,7 @@ mod tests {
                 {"role": "user", "content": "hello"},
                 {
                     "role": "system",
-                    "content": "SessionStart hook additional context: follow the house style."
+                    "content": "x-anthropic-billing-header: internal-billing-marker\nSessionStart hook additional context: follow the house style."
                 },
                 {"role": "assistant", "content": "visible answer"},
                 {"role": "user", "content": "continue"}
@@ -868,6 +868,10 @@ mod tests {
             input[2]["content"][0]["text"],
             "SessionStart hook additional context: follow the house style."
         );
+        assert!(!input[2]["content"][0]["text"]
+            .as_str()
+            .expect("developer guidance text")
+            .contains("x-anthropic-billing-header:"));
         assert_eq!(input[3]["role"], "assistant");
         assert_eq!(input[3]["content"][0]["text"], "visible answer");
         assert_eq!(input[4]["role"], "user");
