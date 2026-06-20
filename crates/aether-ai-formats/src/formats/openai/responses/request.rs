@@ -314,6 +314,11 @@ fn canonical_messages_to_responses_input(canonical: &CanonicalRequest) -> Option
             CanonicalRole::Developer if is_openai_responses_input_message(&message.extensions) => {
                 "developer"
             }
+            CanonicalRole::System | CanonicalRole::Developer
+                if is_claude_messages_request(&canonical.extensions) =>
+            {
+                "developer"
+            }
             CanonicalRole::System | CanonicalRole::Developer => continue,
         };
         let mut content = Vec::new();
