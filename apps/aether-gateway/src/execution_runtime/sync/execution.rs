@@ -1538,9 +1538,10 @@ async fn execute_execution_runtime_sync_impl(
         .unwrap_or_else(|| "-".to_string());
     let candidate_started_unix_secs = current_request_candidate_unix_ms();
     let lifecycle_seed = build_lifecycle_usage_seed(&plan, report_context.as_ref());
+    let usage_data = state.data.as_ref().clone();
     state
         .usage_runtime
-        .record_pending_direct(state.data.as_ref(), lifecycle_seed)
+        .record_pending_direct(&usage_data, lifecycle_seed)
         .await;
     record_local_request_candidate_status(
         state,
