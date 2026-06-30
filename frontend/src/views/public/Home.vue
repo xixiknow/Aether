@@ -56,24 +56,7 @@
           >
             {{ t('site.home.login') }}
           </button>
-          <button
-            class="flex h-8 w-8 items-center justify-center rounded-lg text-muted-foreground hover:text-foreground hover:bg-muted/50 transition"
-            :title="themeMode === 'system' ? t('theme.system') : themeMode === 'dark' ? t('theme.dark') : t('theme.light')"
-            @click="toggleDarkMode"
-          >
-            <SunMoon
-              v-if="themeMode === 'system'"
-              class="h-3.5 w-3.5"
-            />
-            <Sun
-              v-else-if="themeMode === 'light'"
-              class="h-3.5 w-3.5"
-            />
-            <Moon
-              v-else
-              class="h-3.5 w-3.5"
-            />
-          </button>
+          <ThemeModeButton size="sm" />
           <LanguageSwitcher />
           <a
             href="https://github.com/fawney19/Aether"
@@ -168,24 +151,7 @@
 
         <!-- Right: Theme Toggle + GitHub Icons -->
         <div class="flex items-center gap-1 shrink-0">
-          <button
-            class="flex h-9 w-9 items-center justify-center rounded-lg text-muted-foreground hover:text-foreground hover:bg-muted/50 transition"
-            :title="themeMode === 'system' ? t('theme.system') : themeMode === 'dark' ? t('theme.dark') : t('theme.light')"
-            @click="toggleDarkMode"
-          >
-            <SunMoon
-              v-if="themeMode === 'system'"
-              class="h-4 w-4"
-            />
-            <Sun
-              v-else-if="themeMode === 'light'"
-              class="h-4 w-4"
-            />
-            <Moon
-              v-else
-              class="h-4 w-4"
-            />
-          </button>
+          <ThemeModeButton />
           <LanguageSwitcher />
           <a
             href="https://github.com/fawney19/Aether"
@@ -460,11 +426,8 @@ import { RouterLink } from 'vue-router'
 import {
   ChevronDown,
   Code2,
-  Moon,
   Rocket,
   Sparkles,
-  Sun,
-  SunMoon,
   Terminal
 } from 'lucide-vue-next'
 import GithubIcon from '@/components/icons/GithubIcon.vue'
@@ -473,6 +436,7 @@ import { useDarkMode } from '@/composables/useDarkMode'
 import { useClipboard } from '@/composables/useClipboard'
 import { useSiteInfo } from '@/composables/useSiteInfo'
 import LanguageSwitcher from '@/components/common/LanguageSwitcher.vue'
+import ThemeModeButton from '@/components/common/ThemeModeButton.vue'
 import LoginDialog from '@/features/auth/components/LoginDialog.vue'
 import RippleLogo from '@/components/RippleLogo.vue'
 import HeaderLogo from '@/components/HeaderLogo.vue'
@@ -496,7 +460,7 @@ import {
 import { useI18n } from '@/i18n'
 
 const authStore = useAuthStore()
-const { isDark, themeMode, toggleDarkMode } = useDarkMode()
+const { isDark } = useDarkMode()
 const { copyToClipboard } = useClipboard()
 const { siteName, siteSubtitle } = useSiteInfo()
 const { t } = useI18n()

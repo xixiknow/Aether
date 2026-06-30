@@ -132,24 +132,7 @@
                 @rollback="handleRollback"
               />
               <LanguageSwitcher />
-              <button
-                class="flex h-9 w-9 items-center justify-center rounded-lg text-muted-foreground hover:text-foreground hover:bg-muted/50 transition"
-                :title="themeModeTitle"
-                @click="toggleDarkMode"
-              >
-                <SunMoon
-                  v-if="themeMode === 'system'"
-                  class="h-4 w-4"
-                />
-                <SunMedium
-                  v-else-if="themeMode === 'light'"
-                  class="h-4 w-4"
-                />
-                <Moon
-                  v-else
-                  class="h-4 w-4"
-                />
-              </button>
+              <ThemeModeButton />
               <button
                 class="flex h-9 w-9 items-center justify-center rounded-lg text-muted-foreground hover:text-foreground hover:bg-muted/50 transition"
                 @click="mobileMenuOpen = !mobileMenuOpen"
@@ -329,24 +312,7 @@
           />
           <LanguageSwitcher />
           <!-- Theme Toggle -->
-          <button
-            class="flex h-9 w-9 items-center justify-center rounded-lg text-muted-foreground hover:text-foreground hover:bg-muted/50 transition"
-            :title="themeModeTitle"
-            @click="toggleDarkMode"
-          >
-            <SunMoon
-              v-if="themeMode === 'system'"
-              class="h-4 w-4"
-            />
-            <SunMedium
-              v-else-if="themeMode === 'light'"
-              class="h-4 w-4"
-            />
-            <Moon
-              v-else
-              class="h-4 w-4"
-            />
-          </button>
+          <ThemeModeButton />
           <!-- GitHub Link -->
           <a
             href="https://github.com/fawney19/Aether"
@@ -436,7 +402,6 @@ import { useRoute, useRouter } from 'vue-router'
 import { marked } from 'marked'
 import { useAuthStore } from '@/stores/auth'
 import { useModuleStore } from '@/stores/modules'
-import { useDarkMode } from '@/composables/useDarkMode'
 import { useSiteInfo } from '@/composables/useSiteInfo'
 import { useToast } from '@/composables/useToast'
 import { isDemoMode } from '@/config/demo'
@@ -449,16 +414,14 @@ import AppShell from '@/components/layout/AppShell.vue'
 import SidebarNav from '@/components/layout/SidebarNav.vue'
 import HeaderLogo from '@/components/HeaderLogo.vue'
 import LanguageSwitcher from '@/components/common/LanguageSwitcher.vue'
+import ThemeModeButton from '@/components/common/ThemeModeButton.vue'
 import UpdateDialog from '@/components/common/UpdateDialog.vue'
 import VersionButton from '@/components/common/VersionButton.vue'
 import { buildUpdateErrorStatus } from '@/utils/updateStatus'
 import {
   Settings,
   AlertTriangle,
-  SunMedium,
-  Moon,
   LogOut,
-  SunMoon,
   ChevronRight,
   Menu,
   X,
@@ -476,7 +439,6 @@ const router = useRouter()
 const route = useRoute()
 const authStore = useAuthStore()
 const moduleStore = useModuleStore()
-const { themeMode, toggleDarkMode } = useDarkMode()
 const { siteName, siteSubtitle } = useSiteInfo()
 const { success, error: showError } = useToast()
 const { t, locale } = useI18n()
@@ -537,12 +499,6 @@ const updateDialogReleaseLinkLabel = computed(() => {
   if (updateDialogMode.value === 'selected') return t('update.link.tag')
   return updateSupported.value ? t('update.link.update') : t('update.link.release')
 })
-const themeModeTitle = computed(() => {
-  if (themeMode.value === 'system') return t('theme.system')
-  if (themeMode.value === 'dark') return t('theme.dark')
-  return t('theme.light')
-})
-
 watch(systemUpdatePhase, (val) => {
   setSessionStorageItem('aether_update_phase', val)
 })

@@ -44,6 +44,20 @@ function installStorage(name: 'localStorage' | 'sessionStorage') {
 installStorage('localStorage')
 installStorage('sessionStorage')
 
+if (typeof globalThis.requestAnimationFrame !== 'function') {
+  Object.defineProperty(globalThis, 'requestAnimationFrame', {
+    value: (callback: FrameRequestCallback) => window.setTimeout(() => callback(Date.now()), 16),
+    configurable: true,
+  })
+}
+
+if (typeof globalThis.cancelAnimationFrame !== 'function') {
+  Object.defineProperty(globalThis, 'cancelAnimationFrame', {
+    value: (handle: number) => window.clearTimeout(handle),
+    configurable: true,
+  })
+}
+
 beforeEach(async () => {
   localStorage.clear()
   sessionStorage.clear()

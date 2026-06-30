@@ -4,356 +4,40 @@
       variant="default"
       class="overflow-hidden"
     >
-      <!-- Header -->
-      <div class="px-4 sm:px-6 py-3 sm:py-3.5 border-b border-border/60">
-        <!-- Mobile -->
-        <div class="flex flex-col gap-3 xl:hidden">
-          <div class="min-w-0">
-            <h3 class="text-base font-semibold">
-              号池管理
-            </h3>
-            <p
-              v-if="poolHeaderMetaText"
-              class="mt-1 text-xs text-muted-foreground"
-            >
-              {{ poolHeaderMetaText }}
-            </p>
-          </div>
-          <div
-            class="grid grid-cols-3 items-center gap-2"
-          >
-            <Select
-              v-model="selectedProviderIdProxy"
-              :disabled="providerSelectDisabled"
-            >
-              <SelectTrigger
-                class="h-9 text-xs border-border/60"
-                :disabled="providerSelectDisabled"
-              >
-                <SelectValue placeholder="选择 Provider" />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem
-                  v-for="item in poolProviders"
-                  :key="item.provider_id"
-                  :value="item.provider_id"
-                >
-                  {{ item.provider_name }}
-                  <span class="text-muted-foreground ml-1">({{ item.total_keys }})</span>
-                  <span
-                    v-if="!item.pool_enabled"
-                    class="ml-1 text-[10px] text-amber-600"
-                  >未启用</span>
-                </SelectItem>
-              </SelectContent>
-            </Select>
-            <Select v-model="statusFilter">
-              <SelectTrigger class="h-9 w-full text-xs border-border/60">
-                <SelectValue placeholder="状态" />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem
-                  v-for="item in poolKeyStatusFilterOptions"
-                  :key="`mobile-${item.value}`"
-                  :value="item.value"
-                >
-                  {{ item.label }}
-                </SelectItem>
-              </SelectContent>
-            </Select>
-            <div class="relative min-w-0">
-              <Search class="absolute left-2.5 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-muted-foreground z-10 pointer-events-none" />
-              <Input
-                v-model="searchQuery"
-                type="text"
-                placeholder="搜索账号..."
-                class="w-full pl-8 pr-3 h-9 text-sm bg-background/50 border-border/60"
-              />
-            </div>
-          </div>
-          <div
-            v-if="selectedProviderId"
-            class="flex items-center gap-1"
-          >
-            <div class="min-w-0 flex-1 flex justify-center">
-              <Button
-                variant="ghost"
-                size="icon"
-                class="h-8 w-8 shrink-0"
-                title="添加账号"
-                @click="showImportDialog = true"
-              >
-                <Upload class="w-3.5 h-3.5" />
-              </Button>
-            </div>
-            <div class="min-w-0 flex-1 flex justify-center">
-              <ProviderProxyPopover
-                :open="providerProxyMobilePopoverOpen"
-                :node-id="selectedProviderData?.proxy?.node_id"
-                :saving="savingProviderProxy"
-                :title="getProviderProxyButtonTitle()"
-                @update:open="(open: boolean) => handleProviderProxyPopoverToggle('mobile', open)"
-                @select="setProviderProxy"
-                @clear="clearProviderProxy"
-              />
-            </div>
-            <div class="min-w-0 flex-1 flex justify-center">
-              <Button
-                variant="ghost"
-                size="icon"
-                class="h-8 w-8 shrink-0"
-                title="号池调度"
-                @click="openSchedulingDialog()"
-              >
-                <SlidersHorizontal class="w-3.5 h-3.5" />
-              </Button>
-            </div>
-            <div class="min-w-0 flex-1 flex justify-center">
-              <Button
-                variant="ghost"
-                size="icon"
-                class="h-8 w-8 shrink-0"
-                title="账号批量操作"
-                @click="showAccountBatchDialog = true"
-              >
-                <Users class="w-3.5 h-3.5" />
-              </Button>
-            </div>
-            <div class="min-w-0 flex-1 flex justify-center">
-              <Button
-                variant="ghost"
-                size="icon"
-                class="h-8 w-8 shrink-0"
-                title="编辑提供商"
-                @click="openProviderEditDialog"
-              >
-                <Edit class="w-3.5 h-3.5" />
-              </Button>
-            </div>
-            <div class="min-w-0 flex-1 flex justify-center">
-              <Button
-                variant="ghost"
-                size="icon"
-                class="h-8 w-8 shrink-0"
-                title="编辑端点"
-                @click="openEndpointEditDialog"
-              >
-                <Plug class="w-3.5 h-3.5" />
-              </Button>
-            </div>
-            <div
-              v-if="showAdaptiveHotPoolMetricsButton"
-              class="min-w-0 flex-1 flex justify-center"
-            >
-              <Button
-                variant="ghost"
-                size="icon"
-                class="h-8 w-8 shrink-0"
-                data-testid="pool-demand-metrics-button"
-                title="查看自适应热池指标"
-                @click="showDemandMetricsDialog = true"
-              >
-                <Activity class="w-3.5 h-3.5" />
-              </Button>
-            </div>
-            <div class="min-w-0 flex-1 flex justify-center">
-              <Button
-                variant="ghost"
-                size="icon"
-                class="h-8 w-8 shrink-0"
-                title="高级设置"
-                @click="showAdvancedDialog = true"
-              >
-                <Settings2 class="w-3.5 h-3.5" />
-              </Button>
-            </div>
-            <div class="min-w-0 flex-1 flex justify-center">
-              <Button
-                variant="ghost"
-                size="icon"
-                class="h-8 w-8 shrink-0"
-                :class="getProviderToggleButtonClass()"
-                :disabled="togglingProviderStatus"
-                :title="getProviderToggleButtonTitle()"
-                @click="toggleSelectedProviderStatus"
-              >
-                <Power class="w-3.5 h-3.5" />
-              </Button>
-            </div>
-            <div class="min-w-0 flex-1 flex justify-center">
-              <RefreshButton
-                :loading="refreshCurrentPageLoading"
-                :title="refreshButtonTitle"
-                @click="refreshCurrentPage"
-              />
-            </div>
-          </div>
-        </div>
-
-        <!-- Desktop -->
-        <div class="hidden xl:flex items-center justify-between gap-4">
-          <div class="flex items-center gap-2">
-            <h3 class="text-base font-semibold">
-              号池管理
-              <span
-                v-if="poolHeaderMetaText"
-                class="ml-2 text-xs font-normal text-muted-foreground"
-              >
-                | {{ poolHeaderMetaText }}
-              </span>
-            </h3>
-          </div>
-          <div
-            class="flex items-center gap-2"
-            data-testid="pool-header-actions"
-          >
-            <Select
-              v-model="selectedProviderIdProxy"
-              :disabled="providerSelectDisabled"
-            >
-              <SelectTrigger
-                class="w-36 h-8 text-xs border-border/60"
-                :disabled="providerSelectDisabled"
-              >
-                <SelectValue placeholder="选择 Provider" />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem
-                  v-for="item in poolProviders"
-                  :key="item.provider_id"
-                  :value="item.provider_id"
-                >
-                  {{ item.provider_name }}
-                  <span class="text-muted-foreground ml-1">({{ item.total_keys }})</span>
-                  <span
-                    v-if="!item.pool_enabled"
-                    class="ml-1 text-[10px] text-amber-600"
-                  >未启用</span>
-                </SelectItem>
-              </SelectContent>
-            </Select>
-            <div class="h-4 w-px bg-border" />
-            <div
-              v-if="selectedProviderId"
-              class="relative"
-            >
-              <Search class="absolute left-2.5 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-muted-foreground z-10 pointer-events-none" />
-              <Input
-                v-model="searchQuery"
-                type="text"
-                placeholder="搜索账号..."
-                class="w-40 pl-8 pr-2 h-8 text-xs bg-background/50 border-border/60"
-              />
-            </div>
-            <div
-              v-if="selectedProviderId"
-              class="h-4 w-px bg-border"
-            />
-            <button
-              v-if="selectedProviderId"
-              class="group inline-flex items-center gap-1.5 px-2.5 h-8 rounded-md border border-border/50 bg-muted/20 hover:bg-muted/40 hover:border-primary/40 transition-all duration-200 text-xs"
-              title="点击调整号池调度"
-              @click="openSchedulingDialog()"
-            >
-              <span class="text-muted-foreground/80 hidden lg:inline">调度:</span>
-              <span class="font-medium text-foreground/90">{{ poolSchedulingLabel }}</span>
-              <ChevronDown class="w-3 h-3 text-muted-foreground/70 group-hover:text-foreground transition-colors" />
-            </button>
-            <div
-              v-if="selectedProviderId"
-              class="h-4 w-px bg-border"
-            />
-            <Button
-              v-if="selectedProviderId"
-              variant="ghost"
-              size="icon"
-              class="h-8 w-8"
-              title="添加账号"
-              @click="showImportDialog = true"
-            >
-              <Upload class="w-3.5 h-3.5" />
-            </Button>
-            <ProviderProxyPopover
-              v-if="selectedProviderId"
-              :open="providerProxyDesktopPopoverOpen"
-              :node-id="selectedProviderData?.proxy?.node_id"
-              :saving="savingProviderProxy"
-              :title="getProviderProxyButtonTitle()"
-              @update:open="(open: boolean) => handleProviderProxyPopoverToggle('desktop', open)"
-              @select="setProviderProxy"
-              @clear="clearProviderProxy"
-            />
-            <Button
-              v-if="selectedProviderId"
-              variant="ghost"
-              size="icon"
-              class="h-8 w-8"
-              title="编辑提供商"
-              @click="openProviderEditDialog"
-            >
-              <Edit class="w-3.5 h-3.5" />
-            </Button>
-            <Button
-              v-if="selectedProviderId"
-              variant="ghost"
-              size="icon"
-              class="h-8 w-8"
-              title="编辑端点"
-              @click="openEndpointEditDialog"
-            >
-              <Plug class="w-3.5 h-3.5" />
-            </Button>
-            <Button
-              v-if="showAdaptiveHotPoolMetricsButton"
-              variant="ghost"
-              size="icon"
-              class="h-8 w-8"
-              data-testid="pool-demand-metrics-button"
-              title="查看自适应热池指标"
-              @click="showDemandMetricsDialog = true"
-            >
-              <Activity class="w-3.5 h-3.5" />
-            </Button>
-            <Button
-              v-if="selectedProviderId"
-              variant="ghost"
-              size="icon"
-              class="h-8 w-8"
-              title="高级设置"
-              @click="showAdvancedDialog = true"
-            >
-              <Settings2 class="w-3.5 h-3.5" />
-            </Button>
-            <Button
-              v-if="selectedProviderId"
-              variant="ghost"
-              size="icon"
-              class="h-8 w-8"
-              title="账号"
-              @click="showAccountBatchDialog = true"
-            >
-              <Users class="w-3.5 h-3.5" />
-            </Button>
-            <Button
-              v-if="selectedProviderId"
-              variant="ghost"
-              size="icon"
-              class="h-8 w-8"
-              :class="getProviderToggleButtonClass()"
-              :disabled="togglingProviderStatus"
-              :title="getProviderToggleButtonTitle()"
-              @click="toggleSelectedProviderStatus"
-            >
-              <Power class="w-3.5 h-3.5" />
-            </Button>
-            <RefreshButton
-              :loading="refreshCurrentPageLoading"
-              :title="refreshButtonTitle"
-              @click="refreshCurrentPage"
-            />
-          </div>
-        </div>
-      </div>
+      <PoolManagementHeader
+        v-model:provider-id="selectedProviderIdProxy"
+        v-model:status="statusFilter"
+        v-model:search="searchQuery"
+        :providers="poolProviders"
+        :provider-select-disabled="providerSelectDisabled"
+        :status-options="poolKeyStatusFilterOptions"
+        :meta-text="poolHeaderMetaText"
+        :provider-proxy-node-id="selectedProviderData?.proxy?.node_id"
+        :provider-proxy-mobile-open="providerProxyMobilePopoverOpen"
+        :provider-proxy-desktop-open="providerProxyDesktopPopoverOpen"
+        :provider-proxy-button-title="getProviderProxyButtonTitle()"
+        :saving-provider-proxy="savingProviderProxy"
+        :pool-scheduling-label="poolSchedulingLabel"
+        :show-adaptive-hot-pool-metrics-button="showAdaptiveHotPoolMetricsButton"
+        :provider-toggle-button-title="getProviderToggleButtonTitle()"
+        :provider-toggle-button-class="getProviderToggleButtonClass()"
+        :toggling-provider-status="togglingProviderStatus"
+        :refresh-loading="refreshCurrentPageLoading"
+        :refresh-title="refreshButtonTitle"
+        @import="showImportDialog = true"
+        @scheduling="openSchedulingDialog"
+        @account-batch="showAccountBatchDialog = true"
+        @edit-provider="openProviderEditDialog"
+        @edit-endpoint="openEndpointEditDialog"
+        @demand-metrics="showDemandMetricsDialog = true"
+        @advanced="showAdvancedDialog = true"
+        @toggle-provider="toggleSelectedProviderStatus"
+        @refresh="refreshCurrentPage"
+        @update:provider-proxy-mobile-open="handleProviderProxyPopoverToggle('mobile', $event)"
+        @update:provider-proxy-desktop-open="handleProviderProxyPopoverToggle('desktop', $event)"
+        @select-provider-proxy="setProviderProxy"
+        @clear-provider-proxy="clearProviderProxy"
+      />
 
       <!-- Loading (initial) -->
       <div
@@ -1489,11 +1173,8 @@
 <script setup lang="ts">
 import { ref, computed, watch, onMounted, onBeforeUnmount } from 'vue'
 import {
-  Search,
   Upload,
-  ChevronDown,
   RefreshCw,
-  Activity,
   Power,
   Database,
   KeyRound,
@@ -1505,24 +1186,13 @@ import {
   RotateCcw,
   SquarePen,
   Trash2,
-  Users,
-  Settings2,
-  SlidersHorizontal,
   CircleHelp,
-  Edit,
-  Plug,
 } from 'lucide-vue-next'
 
 import {
   Card,
   Badge,
   Button,
-  Input,
-  Select,
-  SelectTrigger,
-  SelectValue,
-  SelectContent,
-  SelectItem,
   Table,
   TableHeader,
   TableBody,
@@ -1536,7 +1206,6 @@ import {
   PopoverTrigger,
   PopoverContent,
 } from '@/components/ui'
-import RefreshButton from '@/components/ui/refresh-button.vue'
 import { useToast } from '@/composables/useToast'
 import { useClipboard } from '@/composables/useClipboard'
 import { useCountdownTimer, getCodexResetCountdown } from '@/composables/useCountdownTimer'
@@ -1578,7 +1247,7 @@ import PoolSchedulingDialog from '@/features/pool/components/PoolSchedulingDialo
 import PoolAdvancedDialog from '@/features/pool/components/PoolAdvancedDialog.vue'
 import PoolDemandMetricsDialog from '@/features/pool/components/PoolDemandMetricsDialog.vue'
 import PoolAccountBatchDialog from '@/features/pool/components/PoolAccountBatchDialog.vue'
-import ProviderProxyPopover from '@/features/pool/components/ProviderProxyPopover.vue'
+import PoolManagementHeader from '@/features/pool/components/PoolManagementHeader.vue'
 import KeyAllowedModelsEditDialog from '@/features/providers/components/KeyAllowedModelsEditDialog.vue'
 import KeyFormDialog from '@/features/providers/components/KeyFormDialog.vue'
 import OAuthKeyEditDialog from '@/features/providers/components/OAuthKeyEditDialog.vue'

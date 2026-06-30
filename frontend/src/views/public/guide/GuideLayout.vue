@@ -125,24 +125,7 @@
             </RouterLink>
 
             <div class="flex items-center gap-3">
-              <button
-                class="flex h-9 w-9 items-center justify-center rounded-lg text-muted-foreground hover:text-foreground hover:bg-muted/50 transition"
-                :title="themeModeTitle"
-                @click="toggleDarkMode"
-              >
-                <SunMoon
-                  v-if="themeMode === 'system'"
-                  class="h-4 w-4"
-                />
-                <Sun
-                  v-else-if="themeMode === 'light'"
-                  class="h-4 w-4"
-                />
-                <Moon
-                  v-else
-                  class="h-4 w-4"
-                />
-              </button>
+              <ThemeModeButton />
               <LanguageSwitcher />
               <button
                 class="flex h-9 w-9 items-center justify-center rounded-lg text-muted-foreground hover:text-foreground hover:bg-muted/50 transition"
@@ -243,24 +226,7 @@
         </div>
 
         <div class="flex items-center gap-2">
-          <button
-            class="flex h-9 w-9 items-center justify-center rounded-lg text-muted-foreground hover:text-foreground hover:bg-muted/50 transition"
-            :title="themeModeTitle"
-            @click="toggleDarkMode"
-          >
-            <SunMoon
-              v-if="themeMode === 'system'"
-              class="h-4 w-4"
-            />
-            <Sun
-              v-else-if="themeMode === 'light'"
-              class="h-4 w-4"
-            />
-            <Moon
-              v-else
-              class="h-4 w-4"
-            />
-          </button>
+          <ThemeModeButton />
           <a
             href="https://github.com/fawney19/Aether"
             target="_blank"
@@ -327,23 +293,19 @@ import { ref, computed, watch, onMounted, onUnmounted, nextTick } from 'vue'
 import { RouterLink, RouterView, useRoute } from 'vue-router'
 import {
   Menu,
-  Moon,
-  Sun,
-  SunMoon,
   ChevronRight,
   X
 } from 'lucide-vue-next'
 import GithubIcon from '@/components/icons/GithubIcon.vue'
 import HeaderLogo from '@/components/HeaderLogo.vue'
 import LanguageSwitcher from '@/components/common/LanguageSwitcher.vue'
+import ThemeModeButton from '@/components/common/ThemeModeButton.vue'
 import AppShell from '@/components/layout/AppShell.vue'
-import { useDarkMode } from '@/composables/useDarkMode'
 import { useSiteInfo } from '@/composables/useSiteInfo'
 import { useI18n } from '@/i18n'
 import { guideNavItems } from './guide-config'
 
 const route = useRoute()
-const { themeMode, toggleDarkMode } = useDarkMode()
 const { siteName, siteSubtitle } = useSiteInfo()
 const { t } = useI18n()
 
@@ -352,11 +314,6 @@ const baseUrl = ref(typeof window !== 'undefined' ? window.location.origin : 'ht
 const activeHash = ref('')
 const lightboxSrc = ref('')
 const lightboxAlt = ref('')
-const themeModeTitle = computed(() => {
-  if (themeMode.value === 'system') return t('theme.system')
-  if (themeMode.value === 'dark') return t('theme.dark')
-  return t('theme.light')
-})
 const resolvedGuideNavItems = computed(() => guideNavItems.map(item => ({
   ...item,
   name: t(item.nameKey),
