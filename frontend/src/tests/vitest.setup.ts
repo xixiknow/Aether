@@ -1,3 +1,5 @@
+import { beforeEach } from 'vitest'
+
 function createMemoryStorage(): Storage {
   const store = new Map<string, string>()
 
@@ -41,3 +43,10 @@ function installStorage(name: 'localStorage' | 'sessionStorage') {
 
 installStorage('localStorage')
 installStorage('sessionStorage')
+
+beforeEach(async () => {
+  localStorage.clear()
+  sessionStorage.clear()
+  const { setI18nLocale } = await import('@/i18n')
+  setI18nLocale('zh-CN')
+})

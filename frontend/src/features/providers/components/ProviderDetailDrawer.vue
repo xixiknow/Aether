@@ -24,165 +24,25 @@
           </div>
 
           <template v-else-if="provider">
-            <!-- 头部:名称 + 快捷操作 -->
-            <div class="sticky top-0 z-10 bg-background border-b px-4 sm:px-6 pt-4 sm:pt-6 pb-3 sm:pb-3">
-              <div class="flex items-center justify-between gap-x-3 sm:gap-x-4 flex-wrap">
-                <div class="flex items-center gap-2 min-w-0">
-                  <h2 class="text-lg sm:text-xl font-bold truncate">
-                    {{ provider.name }}
-                  </h2>
-                  <Badge
-                    :variant="provider.is_active ? 'default' : 'secondary'"
-                    class="text-xs shrink-0"
-                  >
-                    {{ provider.is_active ? '活跃' : '停用' }}
-                  </Badge>
-                </div>
-                <div class="flex items-center gap-1 shrink-0">
-                  <span :title="systemFormatConversionEnabled ? '系统级格式转换已启用' : (provider.enable_format_conversion ? '已启用格式转换（点击关闭）' : '启用格式转换')">
-                    <Button
-                      variant="ghost"
-                      size="icon"
-                      :class="(provider.enable_format_conversion || systemFormatConversionEnabled) ? 'text-primary' : ''"
-                      :disabled="systemFormatConversionEnabled"
-                      @click="toggleFormatConversion"
-                    >
-                      <Shuffle class="w-4 h-4" />
-                    </Button>
-                  </span>
-                  <span :title="hasFailoverRules ? '已配置故障转移规则（点击编辑）' : '配置故障转移规则'">
-                    <Button
-                      variant="ghost"
-                      size="icon"
-                      :class="hasFailoverRules ? 'text-orange-500 dark:text-orange-400' : ''"
-                      @click="failoverRulesDialogOpen = true"
-                    >
-                      <GitBranch class="w-4 h-4" />
-                    </Button>
-                  </span>
-                  <Popover
-                    :open="providerProxyPopoverOpen"
-                    @update:open="handleProviderProxyPopoverToggle"
-                  >
-                    <PopoverTrigger as-child>
-                      <Button
-                        variant="ghost"
-                        size="icon"
-                        :class="provider.proxy?.node_id ? 'text-blue-500' : ''"
-                        :disabled="savingProviderProxy"
-                        :title="provider.proxy?.node_id ? `代理: ${getProviderProxyNodeName()}` : '设置代理节点'"
-                      >
-                        <Globe class="w-4 h-4" />
-                      </Button>
-                    </PopoverTrigger>
-                    <PopoverContent
-                      class="w-72 p-3"
-                      side="bottom"
-                      align="end"
-                    >
-                      <div class="space-y-2">
-                        <div class="flex items-center justify-between">
-                          <span class="text-xs font-medium">代理节点</span>
-                          <Button
-                            v-if="provider.proxy?.node_id"
-                            variant="ghost"
-                            size="sm"
-                            class="h-6 px-2 text-[10px] text-muted-foreground"
-                            :disabled="savingProviderProxy"
-                            @click="clearProviderProxy"
-                          >
-                            清除
-                          </Button>
-                        </div>
-                        <ProxyNodeSelect
-                          :model-value="provider.proxy?.node_id || ''"
-                          trigger-class="h-8"
-                          @update:model-value="setProviderProxy"
-                        />
-                        <p class="text-[10px] text-muted-foreground">
-                          {{ provider.proxy?.node_id ? '当前使用独立代理' : '未设置代理节点' }}
-                        </p>
-                      </div>
-                    </PopoverContent>
-                  </Popover>
-                  <Button
-                    variant="ghost"
-                    size="icon"
-                    title="编辑提供商"
-                    @click="$emit('edit', provider)"
-                  >
-                    <Edit class="w-4 h-4" />
-                  </Button>
-                  <Button
-                    variant="ghost"
-                    size="icon"
-                    :title="provider.is_active ? '点击停用' : '点击启用'"
-                    @click="$emit('toggleStatus', provider)"
-                  >
-                    <Power class="w-4 h-4" />
-                  </Button>
-                  <Button
-                    variant="ghost"
-                    size="icon"
-                    title="关闭"
-                    @click="handleClose"
-                  >
-                    <X class="w-4 h-4" />
-                  </Button>
-                </div>
-              </div>
-              <!-- 网站地址（独占整行，紧贴名称行下方） -->
-              <div
-                v-if="provider.website"
-                class="-mt-0.5"
-              >
-                <a
-                  :href="provider.website"
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  class="text-xs text-muted-foreground hover:text-primary hover:underline transition-colors truncate block"
-                  :title="provider.website"
-                >{{ provider.website }}</a>
-              </div>
-              <!-- 端点 API 格式 -->
-              <div class="flex items-center gap-1.5 flex-wrap mt-3">
-                <template v-if="loadingProviderEndpoints && endpoints.length === 0">
-                  <span class="inline-flex items-center gap-1.5 text-xs text-muted-foreground">
-                    <Loader2 class="w-3.5 h-3.5 animate-spin" />
-                    加载端点中
-                  </span>
-                </template>
-                <template v-else>
-                  <template
-                    v-for="endpoint in endpoints"
-                    :key="endpoint.id"
-                  >
-                    <span
-                      class="text-xs px-2 py-0.5 rounded-md border border-border bg-background hover:bg-accent hover:border-accent-foreground/20 cursor-pointer transition-colors font-medium"
-                      :class="{ 'opacity-40': !endpoint.is_active }"
-                      :title="`编辑 ${formatApiFormat(endpoint.api_format)} 端点`"
-                      @click="handleEditEndpoint(endpoint)"
-                    >{{ formatApiFormat(endpoint.api_format) }}</span>
-                  </template>
-                  <span
-                    v-if="endpoints.length > 0"
-                    class="text-xs px-2 py-0.5 rounded-md border border-dashed border-border hover:bg-accent hover:border-accent-foreground/20 cursor-pointer transition-colors text-muted-foreground"
-                    title="编辑端点"
-                    @click="showAddEndpointDialog"
-                  >编辑</span>
-                  <Button
-                    v-else
-                    variant="outline"
-                    size="sm"
-                    class="h-7 text-xs"
-                    @click="showAddEndpointDialog"
-                  >
-                    <Plus class="w-3 h-3 mr-1" />
-                    添加 API 端点
-                  </Button>
-                </template>
-              </div>
-            </div>
+            <ProviderDetailHeader
+              v-model:provider-proxy-popover-open="providerProxyPopoverOpen"
+              :provider="provider"
+              :endpoints="endpoints"
+              :loading-provider-endpoints="loadingProviderEndpoints"
+              :system-format-conversion-enabled="systemFormatConversionEnabled"
+              :has-failover-rules="hasFailoverRules"
+              :provider-proxy-node-name="getProviderProxyNodeName()"
+              :saving-provider-proxy="savingProviderProxy"
+              @toggle-format-conversion="toggleFormatConversion"
+              @open-failover-rules="failoverRulesDialogOpen = true"
+              @set-provider-proxy="setProviderProxy"
+              @clear-provider-proxy="clearProviderProxy"
+              @edit="$emit('edit', $event)"
+              @toggle-status="$emit('toggleStatus', $event)"
+              @close="handleClose"
+              @edit-endpoint="handleEditEndpoint"
+              @add-endpoint="showAddEndpointDialog"
+            />
 
             <div class="space-y-6 p-4 sm:p-6">
               <!-- 配额使用情况 -->
@@ -193,7 +53,7 @@
                 <div class="space-y-3">
                   <div class="flex items-center justify-between">
                     <h3 class="text-sm font-semibold">
-                      订阅配额
+                      {{ legacyT('订阅配额') }}
                     </h3>
                     <Badge
                       variant="secondary"
@@ -221,7 +81,7 @@
                       v-if="provider.quota_reset_day"
                       class="text-muted-foreground"
                     >
-                      每月 {{ provider.quota_reset_day }} 号重置
+                      {{ legacyT('每月') }} {{ provider.quota_reset_day }} {{ legacyT('号重置') }}
                     </span>
                   </div>
                 </div>
@@ -232,7 +92,7 @@
                 <div class="p-4 border-b border-border/60">
                   <div class="flex items-center justify-between">
                     <h3 class="text-sm font-semibold">
-                      {{ isKeyManagedProviderType(provider.provider_type) ? '密钥管理' : '账号管理' }}
+                      {{ legacyT(isKeyManagedProviderType(provider.provider_type) ? '密钥管理' : '账号管理') }}
                     </h3>
                     <div class="flex items-center gap-2">
                       <Button
@@ -243,7 +103,7 @@
                         @click="handleAddKeyToFirstEndpoint"
                       >
                         <Plus class="w-3.5 h-3.5 mr-1.5" />
-                        {{ isKeyManagedProviderType(provider.provider_type) ? '添加密钥' : '添加账号' }}
+                        {{ legacyT(isKeyManagedProviderType(provider.provider_type) ? '添加密钥' : '添加账号') }}
                       </Button>
                     </div>
                   </div>
@@ -255,7 +115,7 @@
                   class="flex items-center justify-center gap-2 py-12 text-sm text-muted-foreground"
                 >
                   <Loader2 class="w-4 h-4 animate-spin" />
-                  正在加载{{ isKeyManagedProviderType(provider.provider_type) ? '密钥' : '账号' }}
+                  {{ legacyT('正在加载') }}{{ legacyT(isKeyManagedProviderType(provider.provider_type) ? '密钥' : '账号') }}
                 </div>
 
                 <div
@@ -291,9 +151,9 @@
                             <span
                               class="text-sm font-medium truncate"
                               :class="key.name ? 'cursor-pointer hover:text-primary transition-colors' : ''"
-                              :title="key.name ? '点击复制' : ''"
+                              :title="key.name ? legacyT('点击复制') : ''"
                               @click.stop="key.name && copyToClipboard(key.name)"
-                            >{{ key.name || '未命名密钥' }}</span>
+                            >{{ key.name || legacyT('未命名密钥') }}</span>
                             <!-- OAuth 订阅类型标签 (Codex) -->
                             <Badge
                               v-if="key.oauth_plan_type"
@@ -330,7 +190,7 @@
                               variant="ghost"
                               size="icon"
                               class="h-4 w-4 shrink-0"
-                              title="下载 OAuth 授权文件"
+                              :title="legacyT('下载 OAuth 授权文件')"
                               @click.stop="downloadRefreshToken(key)"
                             >
                               <Download class="w-2.5 h-2.5" />
@@ -340,7 +200,7 @@
                               variant="ghost"
                               size="icon"
                               class="h-4 w-4 shrink-0"
-                              title="复制密钥"
+                              :title="legacyT('复制密钥')"
                               @click.stop="copyFullKey(key)"
                             >
                               <Copy class="w-2.5 h-2.5" />
@@ -355,14 +215,14 @@
                                   :title="getOAuthStatusTitle(key)"
                                 >
                                   <ShieldX class="w-2.5 h-2.5" />
-                                  账号异常
+                                  {{ legacyT('账号异常') }}
                                 </Badge>
                                 <Button
                                   variant="ghost"
                                   size="icon"
                                   class="h-4 w-4 shrink-0 text-destructive hover:text-destructive"
                                   :disabled="clearingOAuthInvalidKeyId === key.id"
-                                  title="清除异常标记（确认账号已完成验证后使用）"
+                                  :title="legacyT('清除异常标记（确认账号已完成验证后使用）')"
                                   @click.stop="handleClearOAuthInvalid(key)"
                                 >
                                   <RefreshCw
@@ -388,9 +248,9 @@
                                   v-if="key.oauth_temporary"
                                   variant="outline"
                                   class="text-[10px] px-1.5 py-0 shrink-0"
-                                  title="仅通过 Access Token 导入，无法自动刷新，到期后需要重新导入"
+                                  :title="legacyT('仅通过 Access Token 导入，无法自动刷新，到期后需要重新导入')"
                                 >
-                                  临时
+                                  {{ legacyT('临时') }}
                                 </Badge>
                                 <Button
                                   variant="ghost"
@@ -411,9 +271,9 @@
                             <span
                               v-if="provider.provider_type === 'antigravity' && key.is_active && isOAuthManagedCredential(key) && !hasAntigravityQuotaDisplayData(key)"
                               class="text-[10px] text-orange-500 dark:text-orange-400"
-                              title="该账号尚未完成 Gemini Code Assist 激活，无法获取配额和使用模型"
+                              :title="legacyT('该账号尚未完成 Gemini Code Assist 激活，无法获取配额和使用模型')"
                             >
-                              账号未激活
+                              {{ legacyT('账号未激活') }}
                             </span>
                           </div>
                         </div>
@@ -427,7 +287,7 @@
                           class="text-[10px] px-1.5 py-0 shrink-0"
                           :title="getKeyCircuitBreakerTitle(key)"
                         >
-                          熔断{{ getKeyCircuitProbeCountdown(key) }}
+                          {{ legacyT('熔断') }}{{ getKeyCircuitProbeCountdown(key) }}
                         </Badge>
                         <!-- 健康度 -->
                         <div
@@ -462,7 +322,7 @@
                           variant="ghost"
                           size="icon"
                           class="h-7 w-7"
-                          title="模型权限"
+                          :title="legacyT('模型权限')"
                           @click="handleKeyPermissions(key)"
                         >
                           <Shield class="w-3.5 h-3.5" />
@@ -479,7 +339,7 @@
                               class="h-7 w-7"
                               :class="key.proxy?.node_id ? 'text-blue-500' : ''"
                               :disabled="savingProxyKeyId === key.id"
-                              :title="key.proxy?.node_id ? `代理: ${getKeyProxyNodeName(key)}` : '设置代理节点'"
+                              :title="key.proxy?.node_id ? `${legacyT('代理')}: ${getKeyProxyNodeName(key)}` : legacyT('设置代理节点')"
                               @click.stop
                             >
                               <Globe class="w-3.5 h-3.5" />
@@ -492,7 +352,7 @@
                           >
                             <div class="space-y-2">
                               <div class="flex items-center justify-between">
-                                <span class="text-xs font-medium">代理节点</span>
+                                <span class="text-xs font-medium">{{ legacyT('代理节点') }}</span>
                                 <Button
                                   v-if="key.proxy?.node_id"
                                   variant="ghost"
@@ -501,7 +361,7 @@
                                   :disabled="savingProxyKeyId === key.id"
                                   @click="clearKeyProxy(key)"
                                 >
-                                  清除
+                                  {{ legacyT('清除') }}
                                 </Button>
                               </div>
                               <ProxyNodeSelect
@@ -510,7 +370,7 @@
                                 @update:model-value="(v: string) => setKeyProxy(key, v)"
                               />
                               <p class="text-[10px] text-muted-foreground">
-                                {{ key.proxy?.node_id ? '当前使用独立代理' : '未设置，使用提供商级别代理' }}
+                                {{ legacyT(key.proxy?.node_id ? '当前使用独立代理' : '未设置，使用提供商级别代理') }}
                               </p>
                             </div>
                           </PopoverContent>
@@ -519,7 +379,7 @@
                           variant="ghost"
                           size="icon"
                           class="h-7 w-7"
-                          title="编辑密钥"
+                          :title="legacyT('编辑密钥')"
                           @click="handleEditKey(endpoint, key)"
                         >
                           <Edit class="w-3.5 h-3.5" />
@@ -529,7 +389,7 @@
                           variant="ghost"
                           size="icon"
                           class="h-7 w-7"
-                          title="配额详情"
+                          :title="legacyT('配额详情')"
                           @click="openAntigravityQuotaDialog(key)"
                         >
                           <BarChart3 class="w-3.5 h-3.5" />
@@ -539,7 +399,7 @@
                           size="icon"
                           class="h-7 w-7"
                           :disabled="togglingKeyId === key.id"
-                          :title="key.is_active ? '点击停用' : '点击启用'"
+                          :title="legacyT(key.is_active ? '点击停用' : '点击启用')"
                           @click="toggleKeyActive(key)"
                         >
                           <Power class="w-3.5 h-3.5" />
@@ -548,7 +408,7 @@
                           variant="ghost"
                           size="icon"
                           class="h-7 w-7"
-                          title="删除密钥"
+                          :title="legacyT('删除密钥')"
                           @click="handleDeleteKey(key)"
                         >
                           <Trash2 class="w-3.5 h-3.5" />
@@ -561,7 +421,7 @@
                       class="mt-2 p-2 bg-muted/30 rounded-md"
                     >
                       <div class="flex items-center justify-between mb-1">
-                        <span class="text-[10px] text-muted-foreground">账号配额</span>
+                        <span class="text-[10px] text-muted-foreground">{{ legacyT('账号配额') }}</span>
                         <div class="flex items-center gap-1">
                           <RefreshCw
                             v-if="refreshingQuota"
@@ -583,7 +443,7 @@
                         <!-- 周限额 -->
                         <div v-if="getCodexQuotaDisplay(key)?.primary_used_percent !== undefined">
                           <div class="flex items-center justify-between text-[10px] mb-0.5">
-                            <span class="text-muted-foreground">周限额</span>
+                            <span class="text-muted-foreground">{{ legacyT('周限额') }}</span>
                             <span :class="getQuotaRemainingClass(getCodexQuotaDisplay(key)?.primary_used_percent || 0)">
                               {{ (100 - (getCodexQuotaDisplay(key)?.primary_used_percent || 0)).toFixed(1) }}%
                             </span>
@@ -616,7 +476,7 @@
                         <!-- 5H限额（仅 Team/Plus/Enterprise 显示） -->
                         <div v-if="isCodexTeamPlan(key) && getCodexQuotaDisplay(key)?.secondary_used_percent !== undefined">
                           <div class="flex items-center justify-between text-[10px] mb-0.5">
-                            <span class="text-muted-foreground">5H限额</span>
+                            <span class="text-muted-foreground">{{ legacyT('5H限额') }}</span>
                             <span :class="getQuotaRemainingClass(getCodexQuotaDisplay(key)?.secondary_used_percent || 0)">
                               {{ (100 - (getCodexQuotaDisplay(key)?.secondary_used_percent || 0)).toFixed(1) }}%
                             </span>
@@ -647,7 +507,7 @@
                               ) }}
                             </template>
                             <template v-else>
-                              已重置
+                              {{ legacyT('已重置') }}
                             </template>
                           </div>
                         </div>
@@ -663,7 +523,7 @@
                         <div class="grid gap-3 grid-cols-2">
                           <div v-if="getCodexQuotaDisplay(key)?.spark_secondary_used_percent !== undefined">
                             <div class="flex items-center justify-between text-[10px] mb-0.5">
-                              <span class="text-muted-foreground">Spark 周</span>
+                              <span class="text-muted-foreground">{{ legacyT('Spark 周') }}</span>
                               <span :class="getQuotaRemainingClass(getCodexQuotaDisplay(key)?.spark_secondary_used_percent || 0)">
                                 {{ (100 - (getCodexQuotaDisplay(key)?.spark_secondary_used_percent || 0)).toFixed(1) }}%
                               </span>
@@ -694,13 +554,13 @@
                                 ) }}
                               </template>
                               <template v-else>
-                                已重置
+                                {{ legacyT('已重置') }}
                               </template>
                             </div>
                           </div>
                           <div v-if="getCodexQuotaDisplay(key)?.spark_primary_used_percent !== undefined">
                             <div class="flex items-center justify-between text-[10px] mb-0.5">
-                              <span class="text-muted-foreground">Spark 5H</span>
+                              <span class="text-muted-foreground">{{ legacyT('Spark 5H') }}</span>
                               <span :class="getQuotaRemainingClass(getCodexQuotaDisplay(key)?.spark_primary_used_percent || 0)">
                                 {{ (100 - (getCodexQuotaDisplay(key)?.spark_primary_used_percent || 0)).toFixed(1) }}%
                               </span>
@@ -731,7 +591,7 @@
                                 ) }}
                               </template>
                               <template v-else>
-                                已重置
+                                {{ legacyT('已重置') }}
                               </template>
                             </div>
                           </div>
@@ -752,7 +612,7 @@
                         <ShieldX class="w-4 h-4 shrink-0" />
                         <div class="flex-1 min-w-0">
                           <div class="text-[11px] font-medium">
-                            账户访问被禁止
+                            {{ legacyT('账户访问被禁止') }}
                           </div>
                           <div
                             v-if="getAntigravityForbiddenReason(key)"
@@ -772,7 +632,7 @@
                       <!-- 正常配额显示 -->
                       <template v-else>
                         <div class="flex items-center justify-between mb-1">
-                          <span class="text-[10px] text-muted-foreground">模型配额</span>
+                          <span class="text-[10px] text-muted-foreground">{{ legacyT('模型配额') }}</span>
                           <div class="flex items-center gap-1">
                             <RefreshCw
                               v-if="refreshingQuota"
@@ -811,13 +671,13 @@
                               class="text-[9px] text-muted-foreground/70 mt-0.5"
                             >
                               <template v-if="group.resetSeconds !== null && group.resetSeconds > 0">
-                                {{ formatResetTime(group.resetSeconds) }}后重置
+                                {{ formatResetTime(group.resetSeconds) }}{{ legacyT('后重置') }}
                               </template>
                               <template v-else-if="group.resetSeconds !== null && group.resetSeconds <= 0">
-                                已重置
+                                {{ legacyT('已重置') }}
                               </template>
                               <template v-else>
-                                重置时间未知
+                                {{ legacyT('重置时间未知') }}
                               </template>
                             </div>
                           </div>
@@ -830,7 +690,7 @@
                       class="mt-2 p-2 rounded-md bg-muted/30"
                     >
                       <div class="flex items-center justify-between mb-1">
-                        <span class="text-[10px] text-muted-foreground">模型配额</span>
+                        <span class="text-[10px] text-muted-foreground">{{ legacyT('模型配额') }}</span>
                         <div class="flex items-center gap-1">
                           <RefreshCw
                             v-if="refreshingQuota"
@@ -881,10 +741,10 @@
                             class="text-[9px] text-muted-foreground/70 mt-0.5"
                           >
                             <template v-if="item.resetSeconds > 0">
-                              {{ formatResetTime(item.resetSeconds) }}后重置
+                              {{ formatResetTime(item.resetSeconds) }}{{ legacyT('后重置') }}
                             </template>
                             <template v-else>
-                              已重置
+                              {{ legacyT('已重置') }}
                             </template>
                           </div>
                         </div>
@@ -904,7 +764,7 @@
                         <ShieldX class="w-4 h-4 shrink-0" />
                         <div class="flex-1 min-w-0">
                           <div class="text-[11px] font-medium">
-                            账户已封禁
+                            {{ legacyT('账户已封禁') }}
                           </div>
                           <div
                             v-if="getKiroQuotaDisplay(key)?.ban_reason"
@@ -924,7 +784,7 @@
                       <!-- 正常配额显示 -->
                       <template v-else>
                         <div class="flex items-center justify-between mb-1">
-                          <span class="text-[10px] text-muted-foreground">账号配额</span>
+                          <span class="text-[10px] text-muted-foreground">{{ legacyT('账号配额') }}</span>
                           <div class="flex items-center gap-1">
                             <RefreshCw
                               v-if="refreshingQuota"
@@ -943,7 +803,7 @@
                           <!-- 使用额度进度条 -->
                           <div>
                             <div class="flex items-center justify-between text-[10px] mb-0.5">
-                              <span class="text-muted-foreground">使用额度</span>
+                              <span class="text-muted-foreground">{{ legacyT('使用额度') }}</span>
                               <span :class="getQuotaRemainingClass(getKiroQuotaDisplay(key)?.usage_percentage || 0)">
                                 {{ (100 - (getKiroQuotaDisplay(key)?.usage_percentage || 0)).toFixed(1) }}%
                               </span>
@@ -961,7 +821,7 @@
                                 {{ formatKiroUsage(getKiroQuotaDisplay(key)?.usage_limit) }}
                               </span>
                               <span v-if="getKiroQuotaDisplay(key)?.next_reset_at">
-                                {{ formatKiroResetTime(getKiroQuotaDisplay(key)?.next_reset_at) }}重置
+                                {{ formatKiroResetTime(getKiroQuotaDisplay(key)?.next_reset_at) }}{{ legacyT('重置') }}
                               </span>
                             </div>
                           </div>
@@ -981,7 +841,7 @@
                         <ShieldX class="w-4 h-4 shrink-0" />
                         <div class="flex-1 min-w-0">
                           <div class="text-[11px] font-medium">
-                            账号不可用
+                            {{ legacyT('账号不可用') }}
                           </div>
                           <div
                             v-if="getWindsurfQuotaDisplay(key)?.last_error"
@@ -1012,7 +872,7 @@
                           </div>
                         </div>
                         <div class="flex items-center justify-between mb-1">
-                          <span class="text-[10px] text-muted-foreground">账号配额</span>
+                          <span class="text-[10px] text-muted-foreground">{{ legacyT('账号配额') }}</span>
                           <div class="flex items-center gap-1">
                             <RefreshCw
                               v-if="refreshingQuota"
@@ -1029,7 +889,7 @@
                         <div class="grid grid-cols-2 gap-3">
                           <div v-if="getWindsurfQuotaDisplay(key)?.daily_remaining_percent !== undefined">
                             <div class="flex items-center justify-between text-[10px] mb-0.5">
-                              <span class="text-muted-foreground">日额度</span>
+                              <span class="text-muted-foreground">{{ legacyT('日额度') }}</span>
                               <span :class="getQuotaRemainingClass(getWindsurfQuotaDisplay(key)?.daily_used_percent || 0)">
                                 {{ (getWindsurfQuotaDisplay(key)?.daily_remaining_percent || 0).toFixed(1) }}%
                               </span>
@@ -1045,12 +905,12 @@
                               v-if="getWindsurfQuotaDisplay(key)?.daily_reset_at"
                               class="text-[9px] text-muted-foreground/70 mt-0.5"
                             >
-                              {{ formatKiroResetTime(getWindsurfQuotaDisplay(key)?.daily_reset_at || 0) }}重置
+                              {{ formatKiroResetTime(getWindsurfQuotaDisplay(key)?.daily_reset_at || 0) }}{{ legacyT('重置') }}
                             </div>
                           </div>
                           <div v-if="getWindsurfQuotaDisplay(key)?.weekly_remaining_percent !== undefined">
                             <div class="flex items-center justify-between text-[10px] mb-0.5">
-                              <span class="text-muted-foreground">周额度</span>
+                              <span class="text-muted-foreground">{{ legacyT('周额度') }}</span>
                               <span :class="getQuotaRemainingClass(getWindsurfQuotaDisplay(key)?.weekly_used_percent || 0)">
                                 {{ (getWindsurfQuotaDisplay(key)?.weekly_remaining_percent || 0).toFixed(1) }}%
                               </span>
@@ -1066,7 +926,7 @@
                               v-if="getWindsurfQuotaDisplay(key)?.weekly_reset_at"
                               class="text-[9px] text-muted-foreground/70 mt-0.5"
                             >
-                              {{ formatKiroResetTime(getWindsurfQuotaDisplay(key)?.weekly_reset_at || 0) }}重置
+                              {{ formatKiroResetTime(getWindsurfQuotaDisplay(key)?.weekly_reset_at || 0) }}{{ legacyT('重置') }}
                             </div>
                           </div>
                         </div>
@@ -1088,7 +948,7 @@
                           class="mt-2 flex items-center justify-between gap-2 text-[9px] text-muted-foreground/70"
                         >
                           <span>
-                            模型 {{ getWindsurfQuotaDisplay(key)?.allowed_models_count ?? getWindsurfQuotaDisplay(key)?.models?.length }} 个
+                            {{ legacyT('模型') }} {{ getWindsurfQuotaDisplay(key)?.allowed_models_count ?? getWindsurfQuotaDisplay(key)?.models?.length }} {{ legacyT('个') }}
                           </span>
                           <span
                             v-if="getWindsurfModelPreview(key)"
@@ -1106,7 +966,7 @@
                       class="mt-2 p-2 rounded-md bg-muted/30"
                     >
                       <div class="flex items-center justify-between mb-1">
-                        <span class="text-[10px] text-muted-foreground">账号配额</span>
+                        <span class="text-[10px] text-muted-foreground">{{ legacyT('账号配额') }}</span>
                         <div class="flex items-center gap-1">
                           <RefreshCw
                             v-if="refreshingQuota"
@@ -1122,7 +982,7 @@
                       </div>
                       <div>
                         <div class="flex items-center justify-between text-[10px] mb-0.5">
-                          <span class="text-muted-foreground">剩余额度</span>
+                          <span class="text-muted-foreground">{{ legacyT('剩余额度') }}</span>
                           <span :class="getQuotaRemainingClass(getChatGPTWebQuotaUsedPercent(key))">
                             {{ getChatGPTWebQuotaRemainingPercent(key).toFixed(1) }}%
                           </span>
@@ -1140,7 +1000,7 @@
                             {{ formatChatGPTWebUsage(getChatGPTWebQuotaDisplay(key)?.image_quota_total) }}
                           </span>
                           <span v-if="getChatGPTWebQuotaDisplay(key)?.image_quota_reset_at">
-                            {{ formatKiroResetTime(getChatGPTWebQuotaDisplay(key)?.image_quota_reset_at) }}重置
+                            {{ formatKiroResetTime(getChatGPTWebQuotaDisplay(key)?.image_quota_reset_at) }}{{ legacyT('重置') }}
                           </span>
                         </div>
                       </div>
@@ -1150,7 +1010,7 @@
                       <!-- 优先级放最前面，支持点击编辑 -->
                       <span
                         v-if="editingPriorityKey !== key.id"
-                        title="点击编辑优先级"
+                        :title="legacyT('点击编辑优先级')"
                         class="font-medium text-foreground/80 cursor-pointer hover:text-primary hover:underline"
                         @click="startEditPriority(key)"
                       >P{{ key.internal_priority }}</span>
@@ -1173,15 +1033,15 @@
                           :class="key.last_models_fetch_error ? 'text-amber-600 dark:text-amber-400' : ''"
                           :title="getAutoFetchStatusTitle(key)"
                         >
-                          {{ key.last_models_fetch_error ? '同步失败' : '自动同步' }}
+                          {{ legacyT(key.last_models_fetch_error ? '同步失败' : '自动同步') }}
                         </span>
                       </template>
                       <!-- RPM 限制信息（第二位） -->
                       <template v-if="key.rpm_limit || key.is_adaptive">
                         <span class="text-muted-foreground/40">|</span>
                         <span v-if="key.is_adaptive">
-                          {{ key.learned_rpm_limit != null ? `${key.learned_rpm_limit}` : '探测中' }} RPM
-                          <span class="text-muted-foreground/60">(自适应)</span>
+                          {{ key.learned_rpm_limit != null ? `${key.learned_rpm_limit}` : legacyT('探测中') }} RPM
+                          <span class="text-muted-foreground/60">({{ legacyT('自适应') }})</span>
                         </span>
                         <span v-else>{{ key.rpm_limit }} RPM</span>
                       </template>
@@ -1200,7 +1060,7 @@
                         </span>
                         <span
                           v-if="editingMultiplierKey !== key.id || editingMultiplierFormat !== format"
-                          title="点击编辑倍率"
+                          :title="legacyT('点击编辑倍率')"
                           class="cursor-pointer hover:text-primary hover:underline"
                           :class="{ 'text-destructive': isFormatCircuitOpen(key, format) }"
                           @click="startEditMultiplier(key, format)"
@@ -1228,7 +1088,7 @@
                     v-if="shouldPaginateKeys"
                     class="px-4 py-2 flex items-center justify-between text-xs text-muted-foreground mt-auto"
                   >
-                    <span>共 {{ allKeys.length }} 个{{ isKeyManagedProviderType(provider.provider_type) ? '密钥' : '账号' }}</span>
+                    <span>{{ legacyT('共') }} {{ allKeys.length }} {{ legacyT('个') }}{{ legacyT(isKeyManagedProviderType(provider.provider_type) ? '密钥' : '账号') }}</span>
                     <div class="flex items-center gap-1.5">
                       <Button
                         variant="ghost"
@@ -1260,12 +1120,12 @@
                 >
                   <Key class="w-12 h-12 mx-auto mb-3 opacity-50" />
                   <p class="text-sm">
-                    {{ isKeyManagedProviderType(provider.provider_type) ? '暂无密钥配置' : '暂无账号配置' }}
+                    {{ legacyT(isKeyManagedProviderType(provider.provider_type) ? '暂无密钥配置' : '暂无账号配置') }}
                   </p>
                   <p class="text-xs mt-1">
                     {{ endpoints.length > 0
-                      ? (isKeyManagedProviderType(provider.provider_type) ? '点击上方"添加密钥"按钮创建第一个密钥' : '点击上方"添加账号"按钮添加第一个账号')
-                      : '请先添加端点，然后再添加密钥' }}
+                      ? legacyT(isKeyManagedProviderType(provider.provider_type) ? '点击上方"添加密钥"按钮创建第一个密钥' : '点击上方"添加账号"按钮添加第一个账号')
+                      : legacyT('请先添加端点，然后再添加密钥') }}
                   </p>
                 </div>
               </Card>
@@ -1362,10 +1222,10 @@
   <AlertDialog
     v-if="open"
     :model-value="deleteKeyConfirmOpen"
-    title="删除密钥"
-    :description="`确定要删除密钥 ${keyToDelete?.api_key_masked} 吗？`"
-    confirm-text="删除"
-    cancel-text="取消"
+    :title="legacyT('删除密钥')"
+    :description="formatDeleteKeyConfirmDescription()"
+    :confirm-text="legacyT('删除')"
+    :cancel-text="legacyT('取消')"
     type="danger"
     @update:model-value="deleteKeyConfirmOpen = $event"
     @confirm="confirmDeleteKey"
@@ -1399,7 +1259,7 @@
     :open="antigravityQuotaDialogOpen"
     :metadata="antigravityQuotaDialogKey.upstream_metadata"
     :quota-snapshot="antigravityQuotaDialogKey.status_snapshot?.quota ?? null"
-    :key-name="antigravityQuotaDialogKey.name || '未命名密钥'"
+    :key-name="antigravityQuotaDialogKey.name || legacyT('未命名密钥')"
     :provider-id="providerId"
     :key-id="antigravityQuotaDialogKey.id"
     @update:open="antigravityQuotaDialogOpen = $event"
@@ -1423,20 +1283,18 @@ import {
   Edit,
   Trash2,
   RefreshCw,
-  X,
   Power,
   GripVertical,
   Copy,
   Download,
   Shield,
-  Shuffle,
   BarChart3,
   ShieldX,
   Globe,
-  GitBranch,
 } from 'lucide-vue-next'
 import { parseApiError } from '@/utils/errorParser'
 import { useEscapeKey } from '@/composables/useEscapeKey'
+import { useI18n } from '@/i18n'
 import Button from '@/components/ui/button.vue'
 import Badge from '@/components/ui/badge.vue'
 import Card from '@/components/ui/card.vue'
@@ -1469,6 +1327,7 @@ import ProviderModelFormDialog from '@/features/providers/components/ProviderMod
 import AlertDialog from '@/components/common/AlertDialog.vue'
 import AntigravityQuotaDialog from '@/features/providers/components/AntigravityQuotaDialog.vue'
 import FailoverRulesDialog from '@/features/providers/components/FailoverRulesDialog.vue'
+import ProviderDetailHeader from '@/features/providers/components/ProviderDetailHeader.vue'
 import ProxyNodeSelect from '@/features/providers/components/ProxyNodeSelect.vue'
 import { useProxyNodesStore } from '@/stores/proxy-nodes'
 import {
@@ -1498,7 +1357,7 @@ import type {
   QuotaStatusSnapshot,
   QuotaWindowSnapshot,
 } from '@/api/endpoints/types'
-import { formatApiFormat, formatApiFormatShort } from '@/api/endpoints/types/api-format'
+import { formatApiFormatShort } from '@/api/endpoints/types/api-format'
 import { isOAuthAccountProviderType, isKeyManagedProviderType } from '../utils/providerTypeUtils'
 import {
   isProviderQuotaAutoRefreshCoolingDown,
@@ -1550,6 +1409,11 @@ const { error: showError, success: showSuccess, warning: showWarning } = useToas
 const { confirm } = useConfirm()
 const { copyToClipboard } = useClipboard()
 const { tick: countdownTick, start: startCountdownTimer, stop: stopCountdownTimer } = useCountdownTimer()
+const { legacyT, locale } = useI18n()
+
+function localizedApiError(err: unknown, fallback: string): string {
+  return legacyT(parseApiError(err, fallback))
+}
 
 const loading = ref(false)
 const provider = ref<ProviderWithEndpointsSummary | null>(null)
@@ -1854,10 +1718,10 @@ async function toggleFormatConversion() {
   try {
     const updated = await updateProvider(provider.value.id, { enable_format_conversion: newValue })
     provider.value = updated
-    showSuccess(newValue ? '已启用格式转换' : '已禁用格式转换')
+    showSuccess(legacyT(newValue ? '已启用格式转换' : '已禁用格式转换'))
     emit('refresh')
   } catch {
-    showError('切换格式转换失败')
+    showError(legacyT('切换格式转换失败'))
   }
 }
 
@@ -1871,7 +1735,7 @@ function handleProviderProxyPopoverToggle(open: boolean) {
 
 function getProviderProxyNodeName(): string {
   const nodeId = provider.value?.proxy?.node_id
-  if (!nodeId) return '未知节点'
+  if (!nodeId) return legacyT('未知节点')
   const node = proxyNodesStore.nodes.find(n => n.id === nodeId)
   return node ? node.name : `${nodeId.slice(0, 8)}...`
 }
@@ -1885,10 +1749,10 @@ async function setProviderProxy(nodeId: string) {
     })
     provider.value = updated
     providerProxyPopoverOpen.value = false
-    showSuccess('代理节点已设置')
+    showSuccess(legacyT('代理节点已设置'))
     emit('refresh')
   } catch (err: unknown) {
-    showError(parseApiError(err, '设置代理失败'))
+    showError(localizedApiError(err, '设置代理失败'))
   } finally {
     savingProviderProxy.value = false
   }
@@ -1901,10 +1765,10 @@ async function clearProviderProxy() {
     const updated = await updateProvider(provider.value.id, { proxy: null })
     provider.value = updated
     providerProxyPopoverOpen.value = false
-    showSuccess('已清除提供商代理')
+    showSuccess(legacyT('已清除提供商代理'))
     emit('refresh')
   } catch (err: unknown) {
-    showError(parseApiError(err, '清除代理失败'))
+    showError(localizedApiError(err, '清除代理失败'))
   } finally {
     savingProviderProxy.value = false
   }
@@ -1988,7 +1852,7 @@ async function copyFullKey(key: EndpointAPIKey) {
     revealedKeys.value.set(key.id, textToCopy)
     copyToClipboard(textToCopy)
   } catch (err: unknown) {
-    showError(parseApiError(err, '获取密钥失败'), '错误')
+    showError(localizedApiError(err, '获取密钥失败'), legacyT('错误'))
   }
 }
 
@@ -2009,7 +1873,7 @@ async function downloadRefreshToken(key: EndpointAPIKey) {
     document.body.removeChild(a)
     URL.revokeObjectURL(url)
   } catch (err: unknown) {
-    showError(parseApiError(err, '导出失败'), '错误')
+    showError(localizedApiError(err, '导出失败'), legacyT('错误'))
   }
 }
 
@@ -2017,6 +1881,13 @@ async function downloadRefreshToken(key: EndpointAPIKey) {
 function handleDeleteKey(key: EndpointAPIKey) {
   keyToDelete.value = key
   deleteKeyConfirmOpen.value = true
+}
+
+function formatDeleteKeyConfirmDescription(): string {
+  const keyName = keyToDelete.value?.api_key_masked || keyToDelete.value?.name || ''
+  return locale.value === 'en-US'
+    ? `Delete key ${keyName}?`
+    : `确定要删除密钥 ${keyName} 吗？`
 }
 
 async function confirmDeleteKey() {
@@ -2028,23 +1899,23 @@ async function confirmDeleteKey() {
 
   try {
     await deleteEndpointKey(keyId)
-    showSuccess('密钥已删除')
+    showSuccess(legacyT('密钥已删除'))
     // 刷新端点列表及模型数据（删除 Key 触发自动解除模型关联）
     await loadEndpoints()
     emit('refresh')
   } catch (err: unknown) {
-    showError(parseApiError(err, '删除密钥失败'), '错误')
+    showError(localizedApiError(err, '删除密钥失败'), legacyT('错误'))
   }
 }
 
 async function handleRecoverKey(key: EndpointAPIKey) {
   try {
     const result = await recoverKeyHealth(key.id)
-    showSuccess(result.message || 'Key已完全恢复')
+    showSuccess(legacyT(result.message || 'Key已完全恢复'))
     await loadEndpoints()
     emit('refresh')
   } catch (err: unknown) {
-    showError(parseApiError(err, 'Key恢复失败'), '错误')
+    showError(localizedApiError(err, 'Key恢复失败'), legacyT('错误'))
   }
 }
 
@@ -2089,15 +1960,15 @@ async function handleRefreshOAuth(key: EndpointAPIKey) {
       snapshot: refreshedKey,
     })
     if (feedback.tone === 'warning') {
-      showWarning(feedback.message)
+      showWarning(legacyT(feedback.message))
     } else {
-      showSuccess(feedback.message)
+      showSuccess(legacyT(feedback.message))
     }
     // Antigravity：token 刷新后可能完成了账号激活，触发配额获取
     // （不 emit('refresh')，避免触发全局 provider 余额刷新）
     void autoRefreshQuotaInBackground({ ignoreCooldown: true })
   } catch (err: unknown) {
-    showError(parseApiError(err, 'Token 刷新失败'), '错误')
+    showError(localizedApiError(err, 'Token 刷新失败'), legacyT('错误'))
   } finally {
     refreshingOAuthKeyId.value = null
   }
@@ -2110,14 +1981,21 @@ function isAccountLevelBlock(key: EndpointAPIKey): boolean {
   return account.blocked && !oauth?.isInvalid
 }
 
+function formatClearOAuthInvalidConfirmMessage(key: EndpointAPIKey): string {
+  const keyName = key.name || key.id.slice(0, 8)
+  return locale.value === 'en-US'
+    ? `Confirm account "${keyName}" has completed manual verification? After clearing, the system will re-evaluate this key using the current manual switch and scheduling state.`
+    : `确认账号 "${keyName}" 已手动完成验证？清除后系统会按当前手动开关和调度状态重新评估该 Key。`
+}
+
 // 清除 OAuth 失效标记
 async function handleClearOAuthInvalid(key: EndpointAPIKey) {
   if (clearingOAuthInvalidKeyId.value) return
 
   const confirmed = await confirm({
-    title: '清除账号异常标记',
-    message: `确认账号 "${key.name || key.id.slice(0, 8)}" 已手动完成验证？清除后系统会按当前手动开关和调度状态重新评估该 Key。`,
-    confirmText: '确认清除',
+    title: legacyT('清除账号异常标记'),
+    message: formatClearOAuthInvalidConfirmMessage(key),
+    confirmText: legacyT('确认清除'),
     variant: 'default',
   })
   if (!confirmed) return
@@ -2125,7 +2003,7 @@ async function handleClearOAuthInvalid(key: EndpointAPIKey) {
   clearingOAuthInvalidKeyId.value = key.id
   try {
     await clearOAuthInvalid(key.id)
-    showSuccess('已清除 OAuth 异常标记')
+    showSuccess(legacyT('已清除 OAuth 异常标记'))
     // 更新本地数据
     const keyInList = providerKeys.value.find(k => k.id === key.id)
     if (keyInList) {
@@ -2155,7 +2033,7 @@ async function handleClearOAuthInvalid(key: EndpointAPIKey) {
     }
     await loadEndpoints()
   } catch (err: unknown) {
-    showError(parseApiError(err, '清除失败'), '错误')
+    showError(localizedApiError(err, '清除失败'), legacyT('错误'))
   } finally {
     clearingOAuthInvalidKeyId.value = null
   }
@@ -2559,8 +2437,8 @@ function getWindsurfQuotaStatusLabel(key: EndpointAPIKey): string {
   const label = quota?.label?.trim()
   if (label) return label
   const code = String(quota?.code || '').trim().toLowerCase()
-  if (code === 'cooldown') return '冷却中'
-  return code === 'rate_limited' || code === 'rate_limit' ? '速率受限' : '额度耗尽'
+  if (code === 'cooldown') return legacyT('冷却中')
+  return code === 'rate_limited' || code === 'rate_limit' ? legacyT('速率受限') : legacyT('额度耗尽')
 }
 
 function getWindsurfModelPreview(key: EndpointAPIKey): string | null {
@@ -2729,22 +2607,22 @@ function formatKiroResetTime(timestamp: number | undefined): string {
   const diff = ts - now
 
   if (diff <= 0) {
-    return '已重置'
+    return legacyT('已重置')
   }
 
   const days = Math.floor(diff / (1000 * 60 * 60 * 24))
   const hours = Math.floor((diff % (1000 * 60 * 60 * 24)) / (1000 * 60 * 60))
 
   if (days > 0) {
-    return `${days}天${hours}小时后`
+    return locale.value === 'en-US' ? `${days}d ${hours}h later` : `${days}天${hours}小时后`
   }
 
   const minutes = Math.floor((diff % (1000 * 60 * 60)) / (1000 * 60))
   if (hours > 0) {
-    return `${hours}小时${minutes}分钟后`
+    return locale.value === 'en-US' ? `${hours}h ${minutes}m later` : `${hours}小时${minutes}分钟后`
   }
 
-  return `${minutes}分钟后`
+  return locale.value === 'en-US' ? `${minutes}m later` : `${minutes}分钟后`
 }
 
 // 格式化 Kiro 订阅类型显示
@@ -3074,11 +2952,11 @@ async function autoRefreshQuotaInBackground(options: { ignoreCooldown?: boolean 
     const result = await refreshProviderQuota(providerId)
     const applied = applyQuotaResults(result.results)
     if (result.success <= 0 && applied === 0 && !hadCachedQuota && providerType === 'antigravity') {
-      showError('没有获取到配额信息（请检查账号是否已授权、project_id 是否存在）', '提示')
+      showError(legacyT('没有获取到配额信息（请检查账号是否已授权、project_id 是否存在）'), legacyT('提示'))
     }
   } catch (err: unknown) {
     if (!hadCachedQuota && providerType === 'antigravity') {
-      showError(parseApiError(err, '后台刷新配额失败'), '错误')
+      showError(localizedApiError(err, '后台刷新配额失败'), legacyT('错误'))
     }
   } finally {
     refreshingQuota.value = false
@@ -3125,10 +3003,10 @@ async function toggleKeyActive(key: EndpointAPIKey) {
     const newStatus = !key.is_active
     await updateProviderKey(key.id, { is_active: newStatus })
     key.is_active = newStatus
-    showSuccess(newStatus ? '密钥已启用' : '密钥已停用')
+    showSuccess(legacyT(newStatus ? '密钥已启用' : '密钥已停用'))
     emit('refresh')
   } catch (err: unknown) {
-    showError(parseApiError(err, '操作失败'), '错误')
+    showError(localizedApiError(err, '操作失败'), legacyT('错误'))
   } finally {
     togglingKeyId.value = null
   }
@@ -3160,10 +3038,10 @@ async function setKeyProxy(key: EndpointAPIKey, nodeId: string) {
     })
     key.proxy = { node_id: nodeId, enabled: true }
     proxyPopoverOpenKeyId.value = null
-    showSuccess('代理节点已设置')
+    showSuccess(legacyT('代理节点已设置'))
     emit('refresh')
   } catch (err: unknown) {
-    showError(parseApiError(err, '设置代理失败'), '错误')
+    showError(localizedApiError(err, '设置代理失败'), legacyT('错误'))
   } finally {
     savingProxyKeyId.value = null
   }
@@ -3176,10 +3054,10 @@ async function clearKeyProxy(key: EndpointAPIKey) {
     await updateProviderKey(key.id, { proxy: null })
     key.proxy = null
     proxyPopoverOpenKeyId.value = null
-    showSuccess('已清除账号代理，将使用提供商级别代理')
+    showSuccess(legacyT('已清除账号代理，将使用提供商级别代理'))
     emit('refresh')
   } catch (err: unknown) {
-    showError(parseApiError(err, '清除代理失败'), '错误')
+    showError(localizedApiError(err, '清除代理失败'), legacyT('错误'))
   } finally {
     savingProxyKeyId.value = null
   }
@@ -3277,7 +3155,7 @@ async function savePriority(key: EndpointAPIKey) {
 
   try {
     await updateProviderKey(keyId, { internal_priority: newPriority })
-    showSuccess('优先级已更新')
+    showSuccess(legacyT('优先级已更新'))
     // 更新本地数据 - 更新 providerKeys 中的数据
     const keyToUpdate = providerKeys.value.find(k => k.id === keyId)
     if (keyToUpdate) {
@@ -3287,7 +3165,7 @@ async function savePriority(key: EndpointAPIKey) {
     providerKeys.value.sort((a, b) => (a.internal_priority ?? 0) - (b.internal_priority ?? 0))
     emit('refresh')
   } catch (err: unknown) {
-    showError(parseApiError(err, '更新优先级失败'), '错误')
+    showError(localizedApiError(err, '更新优先级失败'), legacyT('错误'))
   }
 }
 
@@ -3336,7 +3214,7 @@ async function saveMultiplier(key: EndpointAPIKey, format: string) {
 
   // 验证输入有效性
   if (!keyId || isNaN(newMultiplier)) {
-    showError('请输入有效的倍率值')
+    showError(legacyT('请输入有效的倍率值'))
     cancelEditMultiplier()
     multiplierSaving.value = false
     return
@@ -3344,7 +3222,7 @@ async function saveMultiplier(key: EndpointAPIKey, format: string) {
 
   // 验证合理范围
   if (newMultiplier <= 0 || newMultiplier > 100) {
-    showError('倍率必须在 0.01 到 100 之间')
+    showError(legacyT('倍率必须在 0.01 到 100 之间'))
     cancelEditMultiplier()
     multiplierSaving.value = false
     return
@@ -3366,7 +3244,7 @@ async function saveMultiplier(key: EndpointAPIKey, format: string) {
     rateMultipliers[format] = newMultiplier
 
     await updateProviderKey(keyId, { rate_multipliers: rateMultipliers })
-    showSuccess('倍率已更新')
+    showSuccess(legacyT('倍率已更新'))
 
     // 更新本地数据
     const keyToUpdate = providerKeys.value.find(k => k.id === keyId)
@@ -3375,7 +3253,7 @@ async function saveMultiplier(key: EndpointAPIKey, format: string) {
     }
     emit('refresh')
   } catch (err: unknown) {
-    showError(parseApiError(err, '更新倍率失败'), '错误')
+    showError(localizedApiError(err, '更新倍率失败'), legacyT('错误'))
   } finally {
     multiplierSaving.value = false
   }
@@ -3487,11 +3365,11 @@ async function handleKeyDrop(event: DragEvent, targetIndex: number) {
     })
 
     await Promise.all(updatePromises)
-    showSuccess('优先级已更新')
+    showSuccess(legacyT('优先级已更新'))
     await loadEndpoints()
     emit('refresh')
   } catch (err: unknown) {
-    showError(parseApiError(err, '更新优先级失败'), '错误')
+    showError(localizedApiError(err, '更新优先级失败'), legacyT('错误'))
     await loadEndpoints()
   }
 }
@@ -3649,13 +3527,13 @@ function formatUpdatedAt(updatedAt: number): string {
   if (!updatedAt || typeof updatedAt !== 'number') return ''
   const now = Math.floor(Date.now() / 1000)
   const diff = now - updatedAt
-  if (diff <= 60) return '刚刚更新'
+  if (diff <= 60) return legacyT('刚刚更新')
   const minutes = Math.floor(diff / 60)
-  if (minutes < 60) return `${minutes}分钟前更新`
+  if (minutes < 60) return locale.value === 'en-US' ? `${minutes}m ago` : `${minutes}分钟前更新`
   const hours = Math.floor(minutes / 60)
-  if (hours < 24) return `${hours}小时前更新`
+  if (hours < 24) return locale.value === 'en-US' ? `${hours}h ago` : `${hours}小时前更新`
   const days = Math.floor(hours / 24)
-  return `${days}天前更新`
+  return locale.value === 'en-US' ? `${days}d ago` : `${days}天前更新`
 }
 
 // 兼容旧函数名
@@ -3882,7 +3760,7 @@ function getResetCountdownText(
     toCodexRemainingPercent(usedPercent)
   )
   if (!status) return ''
-  return status.isExpired ? status.text : `${status.text} 后重置`
+  return status.isExpired ? legacyT(status.text) : `${legacyT(status.text)} ${legacyT('后重置')}`
 }
 
 function getResetCountdownClass(
@@ -3924,12 +3802,12 @@ function formatResetTime(seconds: number): string {
   const minutes = Math.floor((seconds % 3600) / 60)
 
   if (days > 0) {
-    return `${days}天 ${hours}小时`
+    return locale.value === 'en-US' ? `${days}d ${hours}h` : `${days}天 ${hours}小时`
   }
   if (hours > 0) {
-    return `${hours}小时 ${minutes}分钟`
+    return locale.value === 'en-US' ? `${hours}h ${minutes}m` : `${hours}小时 ${minutes}分钟`
   }
-  return `${minutes}分钟`
+  return locale.value === 'en-US' ? `${minutes}m` : `${minutes}分钟`
 }
 
 // OAuth 订阅类型样式
@@ -4013,45 +3891,45 @@ function getKeyCircuitProbeCountdown(key: EndpointAPIKey): string {
     return ''
   }
   const diffMs = nextProbe - Date.now()
-  return diffMs > 0 ? ` ${formatCountdown(diffMs)}` : ' 探测中'
+  return diffMs > 0 ? ` ${formatCountdown(diffMs)}` : ` ${legacyT('探测中')}`
 }
 
 function getKeyCircuitBreakerTitle(key: EndpointAPIKey): string {
   const entries = getOpenCircuitEntries(key)
-  if (entries.length === 0) return '熔断器已打开'
+  if (entries.length === 0) return legacyT('熔断器已打开')
   const parts = entries.map(([format, value]) => {
     const label = formatApiFormatShort(format)
-    const reason = value.reason ? `原因: ${value.reason}` : '原因: 连续失败'
+    const reason = value.reason ? `${legacyT('原因')}: ${value.reason}` : `${legacyT('原因')}: ${legacyT('连续失败')}`
     const interval = typeof value.probe_interval_minutes === 'number'
-      ? `探测间隔: ${value.probe_interval_minutes} 分钟`
+      ? `${legacyT('探测间隔')}: ${value.probe_interval_minutes} ${legacyT('分钟')}`
       : ''
     const countdown = getFormatProbeCountdown(key, format).trim()
-    return [label, reason, interval, countdown ? `状态: ${countdown}` : '']
+    return [label, reason, interval, countdown ? `${legacyT('状态')}: ${countdown}` : '']
       .filter(Boolean)
       .join(' / ')
   })
-  parts.push('点击恢复按钮可重置熔断器')
+  parts.push(legacyT('点击恢复按钮可重置熔断器'))
   return parts.join('\n')
 }
 
 function getRecoverKeyTitle(key: EndpointAPIKey): string {
   if (key.circuit_breaker_open) {
-    return '重置熔断器并恢复健康状态'
+    return legacyT('重置熔断器并恢复健康状态')
   }
-  return '刷新健康状态'
+  return legacyT('刷新健康状态')
 }
 
 // 获取自动获取模型状态的 title 提示
 function getAutoFetchStatusTitle(key: EndpointAPIKey): string {
-  const parts: string[] = ['自动获取模型已启用']
+  const parts: string[] = [legacyT('自动获取模型已启用')]
 
   if (key.last_models_fetch_at) {
     const date = new Date(key.last_models_fetch_at)
-    parts.push(`上次同步: ${date.toLocaleString()}`)
+    parts.push(`${legacyT('上次同步')}: ${date.toLocaleString(locale.value)}`)
   }
 
   if (key.last_models_fetch_error) {
-    parts.push(`错误: ${key.last_models_fetch_error}`)
+    parts.push(`${legacyT('错误')}: ${key.last_models_fetch_error}`)
   }
 
   return parts.join('\n')
@@ -4078,7 +3956,7 @@ function getFormatProbeCountdown(key: EndpointAPIKey, format: string): string {
     const halfOpenUntil = new Date(formatData.half_open_until)
     const now = new Date()
     if (halfOpenUntil > now) {
-      return ' 探测中'
+      return ` ${legacyT('探测中')}`
     }
   }
   // 等待探测
@@ -4090,7 +3968,7 @@ function getFormatProbeCountdown(key: EndpointAPIKey, format: string): string {
     if (diffMs > 0) {
       return ` ${formatCountdown(diffMs)}`
     } else {
-      return ' 探测中'
+      return ` ${legacyT('探测中')}`
     }
   }
   return ''
@@ -4125,11 +4003,11 @@ async function loadProvider() {
     keyPageSize.value = getProviderKeysPageSize(providerData.provider_type)
 
     if (!provider.value) {
-      throw new Error('Provider 不存在')
+      throw new Error(legacyT('Provider 不存在'))
     }
   } catch (err: unknown) {
     if (requestId !== providerLoadRequestId) return
-    showError(parseApiError(err, '加载失败'), '错误')
+    showError(localizedApiError(err, '加载失败'), legacyT('错误'))
   } finally {
     if (requestId === providerLoadRequestId && shouldShowSpinner) {
       loading.value = false
@@ -4166,7 +4044,7 @@ async function loadProviderKeysPage(page = currentKeyPage.value) {
     providerKeys.value = []
     providerKeysTotal.value = 0
     syncCurrentSelections(endpoints.value, [])
-    showError(parseApiError(err, '加载密钥失败'), '错误')
+    showError(localizedApiError(err, '加载密钥失败'), legacyT('错误'))
   } finally {
     if (requestId === keysLoadRequestId) {
       loadingProviderKeys.value = false
@@ -4205,7 +4083,7 @@ async function loadEndpoints() {
       if (requestId !== endpointsLoadRequestId) return
       endpoints.value = []
       syncCurrentSelections([], providerKeys.value)
-      showError(parseApiError(err, '加载端点失败'), '错误')
+      showError(localizedApiError(err, '加载端点失败'), legacyT('错误'))
     })
     .finally(() => {
       if (requestId === endpointsLoadRequestId) {
