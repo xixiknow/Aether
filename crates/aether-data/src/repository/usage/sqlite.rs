@@ -223,6 +223,7 @@ ON CONFLICT (request_id) DO UPDATE SET
     status_code = CASE
         WHEN "usage".status IN ('completed', 'failed', 'cancelled') AND excluded.status IN ('pending', 'streaming') THEN "usage".status_code
         WHEN "usage".status = 'streaming' AND excluded.status = 'pending' THEN "usage".status_code
+        WHEN "usage".status = 'streaming' AND excluded.status = 'streaming' AND excluded.status_code IS NULL THEN "usage".status_code
         ELSE excluded.status_code
     END,
     error_message = CASE
@@ -4610,6 +4611,45 @@ mod tests {
         assert_eq!(current.first_byte_time_ms, Some(12));
         assert_eq!(current.finalized_at_unix_secs, Some(1_000));
         assert_eq!(current.updated_at_unix_secs, 1_000);
+    }
+
+    #[tokio::test]
+    async fn sqlite_usage_write_repository_preserves_streaming_response_start_from_late_active() {
+        let pool = sqlx::sqlite::SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .expect("sqlite pool should connect");
+        run_sqlite_migrations(&pool)
+            .await
+            .expect("sqlite migrations should run");
+        seed_stats_targets(&pool).await;
+
+        let repository = SqliteUsageWriteRepository::new(pool);
+        repository
+            .upsert(sample_usage(
+                "request-late-active",
+                "streaming",
+                "pending",
+                1_000,
+            ))
+            .await
+            .expect("response-start usage should upsert");
+
+        let mut late_active = sample_usage("request-late-active", "streaming", "pending", 1_001);
+        late_active.status_code = None;
+        late_active.response_time_ms = None;
+        late_active.first_byte_time_ms = None;
+
+        let current = repository
+            .upsert(late_active)
+            .await
+            .expect("late active usage should not clear response-start fields");
+
+        assert_eq!(current.status, "streaming");
+        assert_eq!(current.status_code, Some(200));
+        assert_eq!(current.response_time_ms, Some(42));
+        assert_eq!(current.first_byte_time_ms, Some(12));
     }
 
     #[tokio::test]

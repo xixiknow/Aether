@@ -202,6 +202,7 @@ ON DUPLICATE KEY UPDATE
   status_code = CASE
     WHEN status IN ('completed', 'failed', 'cancelled') AND VALUES(status) IN ('pending', 'streaming') THEN status_code
     WHEN status = 'streaming' AND VALUES(status) = 'pending' THEN status_code
+    WHEN status = 'streaming' AND VALUES(status) = 'streaming' AND VALUES(status_code) IS NULL THEN status_code
     ELSE VALUES(status_code)
   END,
   error_message = CASE
@@ -1625,6 +1626,9 @@ mod tests {
         assert!(super::UPSERT_USAGE_SQL.contains("updated_at_unix_secs = CASE"));
         assert!(super::UPSERT_USAGE_SQL
             .contains("WHEN status = 'streaming' AND VALUES(status) = 'pending' THEN status"));
+        assert!(super::UPSERT_USAGE_SQL.contains(
+            "WHEN status = 'streaming' AND VALUES(status) = 'streaming' AND VALUES(status_code) IS NULL THEN status_code"
+        ));
     }
 
     #[tokio::test]

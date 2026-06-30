@@ -725,6 +725,77 @@ impl UsageRuntime {
         }
     }
 
+    pub fn record_sync_active_immediate_async<T>(&self, data: &T, seed: LifecycleUsageSeed)
+    where
+        T: UsageRuntimeAccess + Clone + 'static,
+    {
+        if !self.is_enabled() {
+            return;
+        }
+        let runtime = self.clone();
+        let data = T::clone(data);
+        let request_id = seed.request_id.clone();
+        spawn_on_usage_background_runtime(boxed_usage_task(async move {
+            let now_unix_secs = now_unix_secs();
+            match build_active_usage_event_offthread(seed, now_unix_secs).await {
+                Ok(mut event) => {
+                    runtime
+                        .apply_body_capture_policy_from_data(&data, &mut event)
+                        .await;
+                    runtime.write_event_direct(&data, &event).await;
+                }
+                Err(err) => {
+                    warn!(
+                        event_name = "usage_active_event_build_failed",
+                        log_type = "event",
+                        request_id = %request_id,
+                        error = %err,
+                        "usage runtime failed to build active usage event"
+                    )
+                }
+            }
+        }));
+    }
+
+    pub fn record_stream_started_immediate_async<T>(
+        &self,
+        data: &T,
+        seed: LifecycleUsageSeed,
+        status_code: u16,
+        telemetry: Option<ExecutionTelemetry>,
+    ) where
+        T: UsageRuntimeAccess + Clone + 'static,
+    {
+        if !self.is_enabled() {
+            return;
+        }
+        let runtime = self.clone();
+        let data = T::clone(data);
+        let request_id = seed.request_id.clone();
+        spawn_on_usage_background_runtime(boxed_usage_task(async move {
+            let now_unix_secs = now_unix_secs();
+            match build_streaming_usage_event_offthread(seed, status_code, telemetry, now_unix_secs)
+                .await
+            {
+                Ok(mut event) => {
+                    runtime
+                        .apply_body_capture_policy_from_data(&data, &mut event)
+                        .await;
+                    runtime.write_event_direct(&data, &event).await;
+                }
+                Err(err) => {
+                    warn!(
+                        event_name = "usage_stream_event_build_failed",
+                        log_type = "event",
+                        request_id = %request_id,
+                        error = %err,
+                        "usage runtime failed to build stream usage event"
+                    )
+                }
+            }
+        }));
+    }
+
     pub fn record_sync_terminal<T>(
         &self,
         data: &T,
@@ -2143,6 +2214,17 @@ async fn build_pending_usage_event_offthread(
 ) -> Result<UsageEvent, DataLayerError> {
     tokio::task::spawn_blocking(move || {
         crate::write::build_pending_usage_event_from_owned_seed(seed, now_unix_secs)
+    })
+    .await
+    .map_err(join_error_to_data_layer)?
+}
+
+async fn build_active_usage_event_offthread(
+    seed: LifecycleUsageSeed,
+    now_unix_secs: u64,
+) -> Result<UsageEvent, DataLayerError> {
+    tokio::task::spawn_blocking(move || {
+        crate::write::build_active_usage_event_from_owned_seed(seed, now_unix_secs)
     })
     .await
     .map_err(join_error_to_data_layer)?
