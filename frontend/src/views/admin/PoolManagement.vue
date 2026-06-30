@@ -304,124 +304,19 @@
                   v-if="showAccountQuotaColumn"
                   class="py-3 align-middle"
                 >
-                  <div
-                    v-if="quotaProgressMap[key.key_id]?.length"
-                    class="max-w-[208px] space-y-2"
-                  >
-                    <div
-                      v-for="(item, idx) in quotaProgressMap[key.key_id]"
-                      :key="`${key.key_id}-quota-${idx}`"
-                      class="flex flex-col gap-1 min-w-[140px] max-w-[208px]"
-                    >
-                      <div class="flex items-center justify-between text-[10px] leading-none">
-                        <span class="text-muted-foreground font-medium shrink-0">{{ getQuotaProgressLabel(item.label) }}</span>
-                        <span
-                          v-if="getQuotaProgressResetDisplayText(item)"
-                          data-testid="pool-quota-reset-text"
-                          class="text-muted-foreground/80 tabular-nums truncate"
-                          :title="getQuotaProgressResetDisplayText(item)"
-                        >{{ getQuotaProgressResetDisplayText(item) }}</span>
-                      </div>
-                      <div class="flex items-center gap-1.5">
-                        <div class="relative flex-1 h-1.5 rounded-full bg-border overflow-hidden">
-                          <div
-                            class="absolute left-0 top-0 h-full rounded-full transition-all duration-300"
-                            :class="getQuotaRemainingBarColorByRemaining(item.remainingPercent)"
-                            :style="{ width: `${item.remainingPercent}%` }"
-                          />
-                        </div>
-                        <span
-                          data-testid="pool-quota-meter-text"
-                          class="shrink-0 text-[10px] font-medium tabular-nums leading-none"
-                          :class="getQuotaRemainingClassByRemaining(item.remainingPercent)"
-                        >{{ getQuotaProgressMeterDisplayText(item) }}</span>
-                      </div>
-                    </div>
-                    <div
-                      v-if="keyUiStateMap[key.key_id]?.accountQuotaText"
-                      class="text-[10px] leading-none text-muted-foreground tabular-nums"
-                    >
-                      {{ keyUiStateMap[key.key_id]?.accountQuotaText }}
-                    </div>
-                  </div>
-                  <span
-                    v-else-if="keyUiStateMap[key.key_id]?.accountQuotaText || keyUiStateMap[key.key_id]?.quotaFallbackText"
-                    :class="keyUiStateMap[key.key_id]?.quotaTextClass || ''"
-                  >
-                    {{ keyUiStateMap[key.key_id]?.accountQuotaText || keyUiStateMap[key.key_id]?.quotaFallbackText }}
-                  </span>
-                  <span
-                    v-else
-                    class="text-xs text-muted-foreground"
-                  >-</span>
+                  <PoolKeyQuotaPanel
+                    :items="quotaProgressDisplayMap[key.key_id] || []"
+                    :account-quota-text="keyUiStateMap[key.key_id]?.accountQuotaText"
+                    :fallback-text="keyUiStateMap[key.key_id]?.quotaFallbackText"
+                    :text-class="keyUiStateMap[key.key_id]?.quotaTextClass || ''"
+                  />
                 </TableCell>
                 <TableCell class="py-3 px-2 align-middle">
-                  <div
-                    v-if="isPoolKeyCycleStatsDisplay(key)"
-                    class="mx-auto w-[188px] text-[10px] leading-4"
-                    data-testid="pool-stats-cycle-groups"
-                  >
-                    <div
-                      class="grid min-h-16 w-[188px] grid-cols-[38px_64px_10px_64px] items-center gap-x-1"
-                      data-testid="pool-stats-cycle-grid"
-                    >
-                      <span aria-hidden="true" />
-                      <span
-                        class="text-center text-[9px] font-semibold text-muted-foreground/80"
-                        data-testid="pool-stats-cycle-group-5h"
-                      >5H</span>
-                      <span class="text-center text-muted-foreground/50">|</span>
-                      <span
-                        class="text-center text-[9px] font-semibold text-muted-foreground/80"
-                        data-testid="pool-stats-cycle-group-weekly"
-                      >周</span>
-
-                      <template
-                        v-for="row in getPoolKeyCycleStatsRows(key)"
-                        :key="`${key.key_id}-${row.key}-desktop-cycle-row`"
-                      >
-                        <span class="text-muted-foreground truncate">{{ row.label }}</span>
-                        <span
-                          class="min-w-0 truncate text-center tabular-nums text-foreground/90"
-                          :class="row.fiveH.missing ? 'text-muted-foreground/80' : ''"
-                          :data-testid="`pool-stats-5h-${row.key}`"
-                          :title="row.fiveH.value"
-                        >{{ row.fiveH.value }}</span>
-                        <span class="text-center text-muted-foreground/50">|</span>
-                        <span
-                          class="min-w-0 truncate text-center tabular-nums text-foreground/90"
-                          :class="row.weekly.missing ? 'text-muted-foreground/80' : ''"
-                          :data-testid="`pool-stats-weekly-${row.key}`"
-                          :title="row.weekly.value"
-                        >{{ row.weekly.value }}</span>
-                      </template>
-                    </div>
-                  </div>
-                  <div
-                    v-else
-                    class="grid min-h-16 w-[188px] grid-rows-4 gap-0 mx-auto text-[10px] leading-4"
-                    data-testid="pool-stats-account-total"
-                  >
-                    <div
-                      class="invisible h-4"
-                      aria-hidden="true"
-                    >
-                      -
-                    </div>
-                    <div
-                      v-for="metric in getPoolKeyAccountStatsMetrics(key)"
-                      :key="`${key.key_id}-${metric.key}-account-total`"
-                      class="grid grid-cols-[64px_124px] items-center"
-                    >
-                      <span class="text-muted-foreground truncate">{{ metric.label }}</span>
-                      <span
-                        class="min-w-0 truncate text-center tabular-nums text-foreground/90"
-                        :title="metric.value"
-                      >
-                        {{ metric.value }}
-                      </span>
-                    </div>
-                  </div>
+                  <PoolKeyStatsPanel
+                    :cycle="isPoolKeyCycleStatsDisplay(key)"
+                    :cycle-rows="getPoolKeyCycleStatsRows(key)"
+                    :account-metrics="getPoolKeyAccountStatsMetrics(key)"
+                  />
                 </TableCell>
                 <TableCell class="py-3 text-center">
                   <span class="text-[10px] text-muted-foreground whitespace-nowrap">
@@ -695,60 +590,12 @@
 
               <div class="overflow-x-auto rounded-xl border border-border/50 bg-muted/30 px-3 py-2 text-[11px] text-muted-foreground">
                 <div class="space-y-1 text-center">
-                  <template v-if="isPoolKeyCycleStatsDisplay(key)">
-                    <div
-                      class="grid min-h-16 w-[188px] grid-cols-[38px_64px_10px_64px] items-center gap-x-1 text-left"
-                      data-testid="pool-mobile-stats-cycle-grid"
-                    >
-                      <span aria-hidden="true" />
-                      <span
-                        class="text-center text-[10px] font-semibold text-foreground"
-                        data-testid="pool-mobile-stats-cycle-group-5h"
-                      >5H</span>
-                      <span class="text-center text-muted-foreground/50">|</span>
-                      <span
-                        class="text-center text-[10px] font-semibold text-foreground"
-                        data-testid="pool-mobile-stats-cycle-group-weekly"
-                      >周</span>
-
-                      <template
-                        v-for="row in getPoolKeyCycleStatsRows(key)"
-                        :key="`${key.key_id}-${row.key}-mobile-cycle-row`"
-                      >
-                        <span class="text-muted-foreground truncate">{{ row.label }}</span>
-                        <span
-                          class="min-w-0 truncate text-center font-medium text-foreground/90 tabular-nums"
-                          :class="row.fiveH.missing ? 'text-muted-foreground/80' : ''"
-                          :title="row.fiveH.value"
-                        >{{ row.fiveH.value }}</span>
-                        <span class="text-center text-muted-foreground/50">|</span>
-                        <span
-                          class="min-w-0 truncate text-center font-medium text-foreground/90 tabular-nums"
-                          :class="row.weekly.missing ? 'text-muted-foreground/80' : ''"
-                          :title="row.weekly.value"
-                        >{{ row.weekly.value }}</span>
-                      </template>
-                    </div>
-                  </template>
-                  <template v-else>
-                    <div
-                      class="invisible h-4"
-                      aria-hidden="true"
-                    >
-                      -
-                    </div>
-                    <div
-                      v-for="metric in getPoolKeyAccountStatsMetrics(key)"
-                      :key="`${key.key_id}-${metric.key}-mobile-account-total`"
-                      class="grid h-4 w-[188px] grid-cols-[64px_124px] items-center text-left"
-                    >
-                      <span class="text-muted-foreground truncate">{{ metric.label }}</span>
-                      <span
-                        class="min-w-0 truncate text-center font-medium text-foreground/90"
-                        :title="metric.value"
-                      >{{ metric.value }}</span>
-                    </div>
-                  </template>
+                  <PoolKeyStatsPanel
+                    :cycle="isPoolKeyCycleStatsDisplay(key)"
+                    :cycle-rows="getPoolKeyCycleStatsRows(key)"
+                    :account-metrics="getPoolKeyAccountStatsMetrics(key)"
+                    variant="mobile"
+                  />
                   <div class="flex items-center justify-between gap-2 border-t border-border/40 pt-1 mt-1">
                     <span class="text-muted-foreground">导入</span>
                     <span class="font-medium text-foreground/90">{{ keyUiStateMap[key.key_id]?.importedAtRelative || '-' }}</span>
@@ -822,66 +669,14 @@
                 </div>
               </div>
 
-              <div
+              <PoolKeyQuotaPanel
                 v-if="showAccountQuotaColumn"
-                class="rounded-xl border border-border/50 bg-muted/30 px-3 py-2 text-xs"
-              >
-                <div class="text-muted-foreground mb-1">
-                  配额
-                </div>
-                <div
-                  v-if="quotaProgressMap[key.key_id]?.length"
-                  class="space-y-2"
-                >
-                  <div
-                    v-for="(item, idx) in quotaProgressMap[key.key_id]"
-                    :key="`${key.key_id}-quota-mobile-${idx}`"
-                    class="flex flex-col gap-1 min-w-0"
-                  >
-                    <div class="flex items-center justify-between text-[10px] leading-none">
-                      <span class="text-muted-foreground font-medium shrink-0">{{ getQuotaProgressLabel(item.label) }}</span>
-                      <span
-                        v-if="getQuotaProgressResetDisplayText(item)"
-                        data-testid="pool-quota-reset-text"
-                        class="text-muted-foreground/80 tabular-nums truncate"
-                        :title="getQuotaProgressResetDisplayText(item)"
-                      >{{ getQuotaProgressResetDisplayText(item) }}</span>
-                    </div>
-                    <div class="flex items-center gap-1.5">
-                      <div class="relative flex-1 h-1.5 rounded-full bg-border overflow-hidden">
-                        <div
-                          class="absolute left-0 top-0 h-full rounded-full transition-all duration-300"
-                          :class="getQuotaRemainingBarColorByRemaining(item.remainingPercent)"
-                          :style="{ width: `${item.remainingPercent}%` }"
-                        />
-                      </div>
-                      <span
-                        data-testid="pool-quota-meter-text"
-                        class="shrink-0 text-[10px] font-medium tabular-nums leading-none"
-                        :class="getQuotaRemainingClassByRemaining(item.remainingPercent)"
-                      >{{ getQuotaProgressMeterDisplayText(item) }}</span>
-                    </div>
-                  </div>
-                  <div
-                    v-if="keyUiStateMap[key.key_id]?.accountQuotaText"
-                    class="text-[10px] leading-none text-muted-foreground tabular-nums"
-                  >
-                    {{ keyUiStateMap[key.key_id]?.accountQuotaText }}
-                  </div>
-                </div>
-                <div
-                  v-else-if="keyUiStateMap[key.key_id]?.accountQuotaText || keyUiStateMap[key.key_id]?.quotaFallbackText"
-                  :class="keyUiStateMap[key.key_id]?.quotaTextClass || ''"
-                >
-                  {{ keyUiStateMap[key.key_id]?.accountQuotaText || keyUiStateMap[key.key_id]?.quotaFallbackText }}
-                </div>
-                <div
-                  v-else
-                  class="text-muted-foreground"
-                >
-                  -
-                </div>
-              </div>
+                :items="quotaProgressDisplayMap[key.key_id] || []"
+                :account-quota-text="keyUiStateMap[key.key_id]?.accountQuotaText"
+                :fallback-text="keyUiStateMap[key.key_id]?.quotaFallbackText"
+                :text-class="keyUiStateMap[key.key_id]?.quotaTextClass || ''"
+                variant="mobile"
+              />
 
               <div class="flex items-center gap-0.5">
                 <div
@@ -1248,6 +1043,8 @@ import PoolAdvancedDialog from '@/features/pool/components/PoolAdvancedDialog.vu
 import PoolDemandMetricsDialog from '@/features/pool/components/PoolDemandMetricsDialog.vue'
 import PoolAccountBatchDialog from '@/features/pool/components/PoolAccountBatchDialog.vue'
 import PoolManagementHeader from '@/features/pool/components/PoolManagementHeader.vue'
+import PoolKeyQuotaPanel from '@/features/pool/components/PoolKeyQuotaPanel.vue'
+import PoolKeyStatsPanel from '@/features/pool/components/PoolKeyStatsPanel.vue'
 import KeyAllowedModelsEditDialog from '@/features/providers/components/KeyAllowedModelsEditDialog.vue'
 import KeyFormDialog from '@/features/providers/components/KeyFormDialog.vue'
 import OAuthKeyEditDialog from '@/features/providers/components/OAuthKeyEditDialog.vue'
@@ -2022,6 +1819,15 @@ interface QuotaProgressItem {
   allowDynamicReset?: boolean
 }
 
+interface QuotaProgressDisplayItem {
+  label: string
+  remainingPercent: number
+  resetText: string
+  meterText: string
+  barClass: string
+  meterClass: string
+}
+
 interface PoolCodexCycleStatsRow {
   key: PoolStatsMetric['key']
   label: string
@@ -2063,6 +1869,21 @@ const quotaProgressMap = computed<Record<string, QuotaProgressItem[]>>(() => {
   const map: Record<string, QuotaProgressItem[]> = {}
   for (const key of keyPage.value.keys) {
     map[key.key_id] = parseQuotaProgressItems(key)
+  }
+  return map
+})
+
+const quotaProgressDisplayMap = computed<Record<string, QuotaProgressDisplayItem[]>>(() => {
+  const map: Record<string, QuotaProgressDisplayItem[]> = {}
+  for (const key of keyPage.value.keys) {
+    map[key.key_id] = (quotaProgressMap.value[key.key_id] || []).map(item => ({
+      label: getQuotaProgressLabel(item.label),
+      remainingPercent: item.remainingPercent,
+      resetText: getQuotaProgressResetDisplayText(item),
+      meterText: getQuotaProgressMeterDisplayText(item),
+      barClass: getQuotaRemainingBarColorByRemaining(item.remainingPercent),
+      meterClass: getQuotaRemainingClassByRemaining(item.remainingPercent),
+    }))
   }
   return map
 })
