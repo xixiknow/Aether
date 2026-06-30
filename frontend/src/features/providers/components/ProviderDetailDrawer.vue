@@ -244,142 +244,29 @@
                           </div>
                         </div>
                       </div>
-                      <!-- 并发 + 健康度 + 操作按钮 -->
-                      <div class="flex items-center gap-1 shrink-0">
-                        <!-- 熔断徽章 -->
-                        <Badge
-                          v-if="key.circuit_breaker_open"
-                          variant="destructive"
-                          class="text-[10px] px-1.5 py-0 shrink-0"
-                          :title="getKeyCircuitBreakerTitle(key)"
-                        >
-                          {{ legacyT('熔断') }}{{ getKeyCircuitProbeCountdown(key) }}
-                        </Badge>
-                        <!-- 健康度 -->
-                        <div
-                          v-if="key.health_score !== undefined"
-                          class="flex items-center gap-1 mr-1"
-                        >
-                          <div class="w-10 h-1.5 bg-border rounded-full overflow-hidden">
-                            <div
-                              class="h-full transition-all duration-300"
-                              :class="getHealthScoreBarColor(key.health_score || 0)"
-                              :style="{ width: `${(key.health_score || 0) * 100}%` }"
-                            />
-                          </div>
-                          <span
-                            class="text-[10px] font-medium tabular-nums"
-                            :class="getHealthScoreColor(key.health_score || 0)"
-                          >
-                            {{ ((key.health_score || 0) * 100).toFixed(0) }}%
-                          </span>
-                        </div>
-                        <Button
-                          v-if="isKeyRecoverable(key)"
-                          variant="ghost"
-                          size="icon"
-                          class="h-7 w-7 text-green-600"
-                          :title="getRecoverKeyTitle(key)"
-                          @click="handleRecoverKey(key)"
-                        >
-                          <RefreshCw class="w-3.5 h-3.5" />
-                        </Button>
-                        <Button
-                          variant="ghost"
-                          size="icon"
-                          class="h-7 w-7"
-                          :title="legacyT('模型权限')"
-                          @click="handleKeyPermissions(key)"
-                        >
-                          <Shield class="w-3.5 h-3.5" />
-                        </Button>
-                        <!-- 代理节点配置 -->
-                        <Popover
-                          :open="proxyPopoverOpenKeyId === key.id"
-                          @update:open="(v: boolean) => handleProxyPopoverToggle(key.id, v)"
-                        >
-                          <PopoverTrigger as-child>
-                            <Button
-                              variant="ghost"
-                              size="icon"
-                              class="h-7 w-7"
-                              :class="key.proxy?.node_id ? 'text-blue-500' : ''"
-                              :disabled="savingProxyKeyId === key.id"
-                              :title="key.proxy?.node_id ? `${legacyT('代理')}: ${getKeyProxyNodeName(key)}` : legacyT('设置代理节点')"
-                              @click.stop
-                            >
-                              <Globe class="w-3.5 h-3.5" />
-                            </Button>
-                          </PopoverTrigger>
-                          <PopoverContent
-                            class="w-72 p-3"
-                            side="bottom"
-                            align="end"
-                          >
-                            <div class="space-y-2">
-                              <div class="flex items-center justify-between">
-                                <span class="text-xs font-medium">{{ legacyT('代理节点') }}</span>
-                                <Button
-                                  v-if="key.proxy?.node_id"
-                                  variant="ghost"
-                                  size="sm"
-                                  class="h-6 px-2 text-[10px] text-muted-foreground"
-                                  :disabled="savingProxyKeyId === key.id"
-                                  @click="clearKeyProxy(key)"
-                                >
-                                  {{ legacyT('清除') }}
-                                </Button>
-                              </div>
-                              <ProxyNodeSelect
-                                :model-value="key.proxy?.node_id || ''"
-                                trigger-class="h-8"
-                                @update:model-value="(v: string) => setKeyProxy(key, v)"
-                              />
-                              <p class="text-[10px] text-muted-foreground">
-                                {{ legacyT(key.proxy?.node_id ? '当前使用独立代理' : '未设置，使用提供商级别代理') }}
-                              </p>
-                            </div>
-                          </PopoverContent>
-                        </Popover>
-                        <Button
-                          variant="ghost"
-                          size="icon"
-                          class="h-7 w-7"
-                          :title="legacyT('编辑密钥')"
-                          @click="handleEditKey(endpoint, key)"
-                        >
-                          <Edit class="w-3.5 h-3.5" />
-                        </Button>
-                        <Button
-                          v-if="provider.provider_type === 'antigravity'"
-                          variant="ghost"
-                          size="icon"
-                          class="h-7 w-7"
-                          :title="legacyT('配额详情')"
-                          @click="openAntigravityQuotaDialog(key)"
-                        >
-                          <BarChart3 class="w-3.5 h-3.5" />
-                        </Button>
-                        <Button
-                          variant="ghost"
-                          size="icon"
-                          class="h-7 w-7"
-                          :disabled="togglingKeyId === key.id"
-                          :title="legacyT(key.is_active ? '点击停用' : '点击启用')"
-                          @click="toggleKeyActive(key)"
-                        >
-                          <Power class="w-3.5 h-3.5" />
-                        </Button>
-                        <Button
-                          variant="ghost"
-                          size="icon"
-                          class="h-7 w-7"
-                          :title="legacyT('删除密钥')"
-                          @click="handleDeleteKey(key)"
-                        >
-                          <Trash2 class="w-3.5 h-3.5" />
-                        </Button>
-                      </div>
+                      <ProviderKeyActionCluster
+                        :api-key="key"
+                        :provider-type="provider.provider_type"
+                        :recoverable="isKeyRecoverable(key)"
+                        :recover-title="getRecoverKeyTitle(key)"
+                        :circuit-breaker-title="getKeyCircuitBreakerTitle(key)"
+                        :circuit-probe-countdown="getKeyCircuitProbeCountdown(key)"
+                        :health-score-bar-class="getHealthScoreBarColor(key.health_score || 0)"
+                        :health-score-text-class="getHealthScoreColor(key.health_score || 0)"
+                        :proxy-popover-open="proxyPopoverOpenKeyId === key.id"
+                        :proxy-node-name="getKeyProxyNodeName(key)"
+                        :saving-proxy="savingProxyKeyId === key.id"
+                        :toggling="togglingKeyId === key.id"
+                        @recover="handleRecoverKey(key)"
+                        @permissions="handleKeyPermissions(key)"
+                        @update:proxy-popover-open="(v: boolean) => handleProxyPopoverToggle(key.id, v)"
+                        @clear-proxy="clearKeyProxy(key)"
+                        @set-proxy="(v: string) => setKeyProxy(key, v)"
+                        @edit="handleEditKey(endpoint, key)"
+                        @open-antigravity-quota="openAntigravityQuotaDialog(key)"
+                        @toggle-active="toggleKeyActive(key)"
+                        @delete="handleDeleteKey(key)"
+                      />
                     </div>
                     <!-- Codex 上游额度信息（仅当有元数据时显示） -->
                     <div
@@ -1080,17 +967,11 @@ import {
   Plus,
   Key,
   Loader2,
-  Edit,
-  Trash2,
   RefreshCw,
-  Power,
   GripVertical,
   Copy,
   Download,
-  Shield,
-  BarChart3,
   ShieldX,
-  Globe,
 } from 'lucide-vue-next'
 import { parseApiError } from '@/utils/errorParser'
 import { useEscapeKey } from '@/composables/useEscapeKey'
@@ -1098,7 +979,6 @@ import { useI18n } from '@/i18n'
 import Button from '@/components/ui/button.vue'
 import Badge from '@/components/ui/badge.vue'
 import Card from '@/components/ui/card.vue'
-import { Popover, PopoverTrigger, PopoverContent } from '@/components/ui'
 import { useToast } from '@/composables/useToast'
 import { useConfirm } from '@/composables/useConfirm'
 import { useClipboard } from '@/composables/useClipboard'
@@ -1128,10 +1008,10 @@ import AlertDialog from '@/components/common/AlertDialog.vue'
 import AntigravityQuotaDialog from '@/features/providers/components/AntigravityQuotaDialog.vue'
 import FailoverRulesDialog from '@/features/providers/components/FailoverRulesDialog.vue'
 import ProviderDetailHeader from '@/features/providers/components/ProviderDetailHeader.vue'
+import ProviderKeyActionCluster from '@/features/providers/components/ProviderKeyActionCluster.vue'
 import ProviderMonthlyQuotaCard from '@/features/providers/components/ProviderMonthlyQuotaCard.vue'
 import ProviderQuotaProgressRow from '@/features/providers/components/ProviderQuotaProgressRow.vue'
 import ProviderQuotaSectionHeader from '@/features/providers/components/ProviderQuotaSectionHeader.vue'
-import ProxyNodeSelect from '@/features/providers/components/ProxyNodeSelect.vue'
 import { useProxyNodesStore } from '@/stores/proxy-nodes'
 import {
   deleteEndpointKey,
