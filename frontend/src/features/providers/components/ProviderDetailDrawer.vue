@@ -373,7 +373,7 @@
                             <template #footer>
                               <div class="mt-0.5 space-y-0.5">
                                 <div
-                                  v-if="item.resetSeconds !== null || item.usedPercent > 0"
+                                  v-if="item.resetSeconds !== null"
                                   class="text-[9px] text-muted-foreground/70"
                                 >
                                   <template v-if="item.resetSeconds !== null && item.resetSeconds > 0">
@@ -381,9 +381,6 @@
                                   </template>
                                   <template v-else-if="item.resetSeconds !== null && item.resetSeconds <= 0">
                                     {{ legacyT('已重置') }}
-                                  </template>
-                                  <template v-else>
-                                    {{ legacyT('重置时间未知') }}
                                   </template>
                                 </div>
                               </div>
