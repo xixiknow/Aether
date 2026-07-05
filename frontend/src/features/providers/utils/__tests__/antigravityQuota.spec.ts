@@ -11,6 +11,27 @@ describe('antigravityQuota', () => {
 
     expect(
       resolveAntigravityQuotaLabel(
+        'gemini-3-flash-agent',
+        'Gemini 3.5 Flash (High)',
+        opaqueDisplayIndex,
+      ),
+    ).toBe('Gemini 3.5 Flash High')
+    expect(
+      resolveAntigravityQuotaLabel(
+        'gemini-3.5-flash-low',
+        'Gemini 3.5 Flash (Medium)',
+        opaqueDisplayIndex,
+      ),
+    ).toBe('Gemini 3.5 Flash Medium')
+    expect(
+      resolveAntigravityQuotaLabel(
+        'gemini-3.5-flash-extra-low',
+        'Gemini 3.5 Flash (Low)',
+        opaqueDisplayIndex,
+      ),
+    ).toBe('Gemini 3.5 Flash Low')
+    expect(
+      resolveAntigravityQuotaLabel(
         'gemini-2.5-flash',
         'Gemini 3.1 Flash Lite',
         opaqueDisplayIndex,
@@ -41,9 +62,21 @@ describe('antigravityQuota', () => {
         resetSeconds: 10,
       },
       {
-        model: 'gemini-3.5-flash-low',
+        model: 'gemini-3.5-flash-extra-low',
         label: 'Gemini 3.5 Flash Low',
+        remainingPercent: 95,
+        resetSeconds: null,
+      },
+      {
+        model: 'gemini-3.5-flash-low',
+        label: 'Gemini 3.5 Flash Medium',
         remainingPercent: 90,
+        resetSeconds: null,
+      },
+      {
+        model: 'gemini-3-flash-agent',
+        label: 'Gemini 3.5 Flash High',
+        remainingPercent: 80,
         resetSeconds: null,
       },
       {
@@ -68,7 +101,9 @@ describe('antigravityQuota', () => {
 
     expect(items.map(item => item.model)).toEqual([
       'claude-opus-4-6-thinking',
+      'gemini-3-flash-agent',
       'gemini-3.5-flash-low',
+      'gemini-3.5-flash-extra-low',
       'gemini-2.5-flash-lite',
       'tab_flash_lite_preview',
       'chat_20706',

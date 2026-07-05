@@ -1019,7 +1019,11 @@ async fn gateway_handles_antigravity_v1internal_control_plane_without_proxying()
                 );
                 assert_eq!(
                     payload["models"]["gemini-3.5-flash-low"]["displayName"],
-                    "Gemini 3.5 Flash Low"
+                    "Gemini 3.5 Flash Medium"
+                );
+                assert_eq!(
+                    payload["models"]["gemini-3-flash-agent"]["displayName"],
+                    "Gemini 3.5 Flash High"
                 );
                 assert_eq!(
                     payload["models"]["gemini-3.5-flash-low"]["apiProvider"],

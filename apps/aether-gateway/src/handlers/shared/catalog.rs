@@ -581,14 +581,14 @@ fn canonical_antigravity_model_label(model_name: &str) -> Option<&'static str> {
     match model_name.trim() {
         "claude-opus-4-6-thinking" => Some("Claude Opus 4.6 Thinking"),
         "claude-sonnet-4-6" => Some("Claude Sonnet 4.6"),
-        "gemini-3.5-flash-extra-low" => Some("Gemini 3.5 Flash Extra Low"),
-        "gemini-3.5-flash-low" => Some("Gemini 3.5 Flash Low"),
+        "gemini-3-flash-agent" => Some("Gemini 3.5 Flash High"),
+        "gemini-3.5-flash-low" => Some("Gemini 3.5 Flash Medium"),
+        "gemini-3.5-flash-extra-low" => Some("Gemini 3.5 Flash Low"),
         "gemini-3.1-pro-high" => Some("Gemini 3.1 Pro High"),
         "gemini-3.1-pro-low" => Some("Gemini 3.1 Pro Low"),
-        "gemini-pro-agent" => Some("Gemini Pro Agent"),
+        "gemini-pro-agent" => Some("Gemini 3.1 Pro High"),
         "gemini-3.1-flash-image" => Some("Gemini 3.1 Flash Image"),
         "gemini-3.1-flash-lite" => Some("Gemini 3.1 Flash Lite"),
-        "gemini-3-flash-agent" => Some("Gemini 3 Flash Agent"),
         "gemini-3-flash" => Some("Gemini 3 Flash"),
         "gemini-2.5-pro" => Some("Gemini 2.5 Pro"),
         "gemini-2.5-flash-thinking" => Some("Gemini 2.5 Flash Thinking"),
@@ -3760,9 +3760,18 @@ mod tests {
             "antigravity": {
                 "updated_at": 1_775_553_285u64,
                 "quota_by_model": {
-                    "gemini-3.5-flash-extra-low": { "remaining_fraction": 1.0 },
-                    "gemini-3.5-flash-low": { "remaining_fraction": 0.75 },
-                    "gemini-3-flash-agent": { "remaining_fraction": 0.5 },
+                    "gemini-3.5-flash-extra-low": {
+                        "display_name": "Gemini 3.5 Flash (Low)",
+                        "remaining_fraction": 1.0
+                    },
+                    "gemini-3.5-flash-low": {
+                        "display_name": "Gemini 3.5 Flash (Medium)",
+                        "remaining_fraction": 0.75
+                    },
+                    "gemini-3-flash-agent": {
+                        "display_name": "Gemini 3.5 Flash (High)",
+                        "remaining_fraction": 0.5
+                    },
                     "gemini-2.5-flash": {
                         "display_name": "Gemini 3.1 Flash Lite",
                         "remaining_fraction": 0.4
@@ -3796,15 +3805,15 @@ mod tests {
 
         assert_eq!(
             label_for_model("gemini-3.5-flash-extra-low"),
-            Some(json!("Gemini 3.5 Flash Extra Low"))
-        );
-        assert_eq!(
-            label_for_model("gemini-3.5-flash-low"),
             Some(json!("Gemini 3.5 Flash Low"))
         );
         assert_eq!(
+            label_for_model("gemini-3.5-flash-low"),
+            Some(json!("Gemini 3.5 Flash Medium"))
+        );
+        assert_eq!(
             label_for_model("gemini-3-flash-agent"),
-            Some(json!("Gemini 3 Flash Agent"))
+            Some(json!("Gemini 3.5 Flash High"))
         );
         assert_eq!(
             label_for_model("gemini-2.5-flash"),

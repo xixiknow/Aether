@@ -132,8 +132,13 @@ describe('AntigravityQuotaDialog', () => {
             remaining_fraction: 0.01,
             used_percent: 99,
           },
+          'gemini-3-flash-agent': {
+            display_name: 'Gemini 3.5 Flash (High)',
+            remaining_fraction: 0.9,
+            used_percent: 10,
+          },
           'gemini-3.5-flash-low': {
-            display_name: 'Gemini 3.5 Flash Low',
+            display_name: 'Gemini 3.5 Flash (Medium)',
             remaining_fraction: 0.8,
             used_percent: 20,
           },
@@ -152,8 +157,9 @@ describe('AntigravityQuotaDialog', () => {
     })
     const text = root.textContent || ''
 
-    expect(text.indexOf('Claude Opus 4.6 Thinking')).toBeLessThan(text.indexOf('Gemini 3.5 Flash Low'))
-    expect(text.indexOf('Gemini 3.5 Flash Low')).toBeLessThan(text.indexOf('Tab Flash Lite Preview'))
+    expect(text.indexOf('Claude Opus 4.6 Thinking')).toBeLessThan(text.indexOf('Gemini 3.5 Flash High'))
+    expect(text.indexOf('Gemini 3.5 Flash High')).toBeLessThan(text.indexOf('Gemini 3.5 Flash Medium'))
+    expect(text.indexOf('Gemini 3.5 Flash Medium')).toBeLessThan(text.indexOf('Tab Flash Lite Preview'))
     expect(text.indexOf('Tab Flash Lite Preview')).toBeLessThan(text.indexOf('chat_20706'))
 
     unmount()

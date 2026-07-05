@@ -1051,8 +1051,8 @@ fn build_antigravity_default_user_settings_payload() -> Value {
 fn build_antigravity_fetch_available_models_payload() -> Value {
     json!({
         "models": {
-            "gemini-3.5-flash-low": antigravity_model_payload("gemini-3.5-flash-low", "Gemini 3.5 Flash Low"),
-            "gemini-3-flash-agent": antigravity_model_payload("gemini-3-flash-agent", "Gemini 3 Flash Agent"),
+            "gemini-3.5-flash-low": antigravity_model_payload("gemini-3.5-flash-low", "Gemini 3.5 Flash Medium"),
+            "gemini-3-flash-agent": antigravity_model_payload("gemini-3-flash-agent", "Gemini 3.5 Flash High"),
             "gemini-3.1-flash-lite": antigravity_model_payload("gemini-3.1-flash-lite", "Gemini 3.1 Flash Lite"),
             "gemini-3.1-pro-low": antigravity_model_payload("gemini-3.1-pro-low", "Gemini 3.1 Pro Low"),
             "gemini-3-flash": antigravity_model_payload("gemini-3-flash", "Gemini 3 Flash"),
