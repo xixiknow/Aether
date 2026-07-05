@@ -29,15 +29,15 @@ const ANTIGRAVITY_MODEL_LABELS: Record<string, string> = {
 }
 
 const ANTIGRAVITY_MODEL_PRIORITY: Record<string, number> = {
-  'gemini-pro-agent': 10,
-  'gemini-3.1-pro-high': 10,
-  'gemini-3.1-pro-low': 20,
-  'gemini-3-flash-agent': 30,
-  'gemini-3.5-flash-low': 40,
-  'gemini-3.5-flash-extra-low': 50,
-  'claude-opus-4-6-thinking': 60,
-  'claude-sonnet-4-6': 70,
-  'claude-sonnet-4-6-thinking': 70,
+  'claude-opus-4-6-thinking': 10,
+  'claude-sonnet-4-6': 20,
+  'claude-sonnet-4-6-thinking': 25,
+  'gemini-pro-agent': 30,
+  'gemini-3.1-pro-high': 35,
+  'gemini-3.1-pro-low': 40,
+  'gemini-3-flash-agent': 50,
+  'gemini-3.5-flash-low': 60,
+  'gemini-3.5-flash-extra-low': 70,
   'gemini-3.1-flash-image': 80,
   'gemini-3.1-flash-lite': 90,
   'gemini-3-flash': 180,
@@ -78,7 +78,7 @@ function getAntigravityModelPriority(model: string): number {
   const normalizedModel = model.trim()
   const explicit = ANTIGRAVITY_MODEL_PRIORITY[normalizedModel]
   if (explicit !== undefined) return explicit
-  if (normalizedModel.startsWith('claude-')) return 90
+  if (normalizedModel.startsWith('claude-')) return 30
   if (normalizedModel.startsWith('gemini-3.')) return 200
   if (normalizedModel.startsWith('gemini-2.')) return 390
   if (normalizedModel.startsWith('gemini-')) return 490
@@ -99,4 +99,19 @@ export function compareAntigravityQuotaItems<T extends AntigravityQuotaSortableI
     || (a.remainingPercent - b.remainingPercent)
     || a.label.localeCompare(b.label)
     || a.model.localeCompare(b.model)
+}
+
+export function dedupeAntigravityQuotaItemsByLabel<T extends AntigravityQuotaSortableItem>(
+  items: T[],
+): T[] {
+  const selectedByLabel = new Map<string, T>()
+  for (const item of items) {
+    const label = item.label.trim()
+    if (!label) continue
+    const selected = selectedByLabel.get(label)
+    if (!selected || compareAntigravityQuotaItems(item, selected) < 0) {
+      selectedByLabel.set(label, item)
+    }
+  }
+  return Array.from(selectedByLabel.values()).sort(compareAntigravityQuotaItems)
 }

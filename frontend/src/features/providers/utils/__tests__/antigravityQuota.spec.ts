@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest'
 
 import {
   compareAntigravityQuotaItems,
+  dedupeAntigravityQuotaItemsByLabel,
   resolveAntigravityQuotaLabel,
 } from '@/features/providers/utils/antigravityQuota'
 
@@ -120,14 +121,55 @@ describe('antigravityQuota', () => {
     ].sort(compareAntigravityQuotaItems)
 
     expect(items.map(item => item.model)).toEqual([
+      'claude-opus-4-6-thinking',
       'gemini-pro-agent',
       'gemini-3-flash-agent',
       'gemini-3.5-flash-low',
       'gemini-3.5-flash-extra-low',
-      'claude-opus-4-6-thinking',
       'gemini-2.5-flash-lite',
       'tab_flash_lite_preview',
       'chat_20706',
+    ])
+  })
+
+  it('deduplicates display labels while keeping the current preferred quota bucket', () => {
+    const items = dedupeAntigravityQuotaItemsByLabel([
+      {
+        model: 'gemini-3.1-pro-high',
+        label: 'Gemini 3.1 Pro (High)',
+        remainingPercent: 95,
+        resetSeconds: null,
+      },
+      {
+        model: 'gemini-pro-agent',
+        label: 'Gemini 3.1 Pro (High)',
+        remainingPercent: 40,
+        resetSeconds: null,
+      },
+      {
+        model: 'claude-sonnet-4-6-thinking',
+        label: 'Claude Sonnet 4.6 (Thinking)',
+        remainingPercent: 95,
+        resetSeconds: null,
+      },
+      {
+        model: 'claude-sonnet-4-6',
+        label: 'Claude Sonnet 4.6 (Thinking)',
+        remainingPercent: 40,
+        resetSeconds: null,
+      },
+      {
+        model: 'gemini-3-flash-agent',
+        label: 'Gemini 3.5 Flash (High)',
+        remainingPercent: 80,
+        resetSeconds: null,
+      },
+    ])
+
+    expect(items.map(item => item.model)).toEqual([
+      'claude-sonnet-4-6',
+      'gemini-pro-agent',
+      'gemini-3-flash-agent',
     ])
   })
 })

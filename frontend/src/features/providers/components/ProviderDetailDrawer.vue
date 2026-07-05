@@ -959,6 +959,7 @@ import ProviderQuotaSectionHeader from '@/features/providers/components/Provider
 import { useProxyNodesStore } from '@/stores/proxy-nodes'
 import {
   compareAntigravityQuotaItems,
+  dedupeAntigravityQuotaItemsByLabel,
   resolveAntigravityQuotaLabel,
 } from '@/features/providers/utils/antigravityQuota'
 import {
@@ -3418,7 +3419,7 @@ function getAntigravityQuotaItems(metadata: UpstreamMetadata | null | undefined)
   }
 
   items.sort(compareAntigravityQuotaItems)
-  return items
+  return dedupeAntigravityQuotaItemsByLabel(items)
 }
 
 function getAntigravityQuotaItemsFromSnapshot(key: EndpointAPIKey): AntigravityQuotaItem[] {
@@ -3462,7 +3463,7 @@ function getAntigravityQuotaItemsFromSnapshot(key: EndpointAPIKey): AntigravityQ
     .filter((item): item is AntigravityQuotaItem => item !== null)
 
   items.sort(compareAntigravityQuotaItems)
-  return items
+  return dedupeAntigravityQuotaItemsByLabel(items)
 }
 
 const ANTIGRAVITY_QUOTA_PREVIEW_LIMIT = 6

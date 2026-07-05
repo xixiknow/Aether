@@ -120,6 +120,7 @@ import { useToast } from '@/composables/useToast'
 import { parseApiError } from '@/utils/errorParser'
 import {
   compareAntigravityQuotaItems,
+  dedupeAntigravityQuotaItemsByLabel,
   resolveAntigravityQuotaLabel,
 } from '@/features/providers/utils/antigravityQuota'
 
@@ -232,7 +233,7 @@ function buildItemsFromQuotaSnapshot(quota: QuotaStatusSnapshot | null | undefin
     .filter((item): item is QuotaItem => item !== null)
 
   items.sort(compareAntigravityQuotaItems)
-  return items
+  return dedupeAntigravityQuotaItemsByLabel(items)
 }
 
 const items = computed<QuotaItem[]>(() => {
@@ -284,7 +285,7 @@ const items = computed<QuotaItem[]>(() => {
   }
 
   result.sort(compareAntigravityQuotaItems)
-  return result
+  return dedupeAntigravityQuotaItemsByLabel(result)
 })
 
 async function handleTestModel(modelName: string) {

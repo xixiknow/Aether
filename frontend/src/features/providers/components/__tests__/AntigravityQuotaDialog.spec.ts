@@ -164,11 +164,43 @@ describe('AntigravityQuotaDialog', () => {
 
     expect(text).not.toContain('gemini-pro-agent')
     expect(text).not.toContain('claude-opus-4-6-thinking')
+    expect(text.indexOf('Claude Opus 4.6 (Thinking)')).toBeLessThan(text.indexOf('Gemini 3.1 Pro (High)'))
     expect(text.indexOf('Gemini 3.1 Pro (High)')).toBeLessThan(text.indexOf('Gemini 3.5 Flash (High)'))
     expect(text.indexOf('Gemini 3.5 Flash (High)')).toBeLessThan(text.indexOf('Gemini 3.5 Flash (Medium)'))
-    expect(text.indexOf('Gemini 3.5 Flash (Medium)')).toBeLessThan(text.indexOf('Claude Opus 4.6 (Thinking)'))
-    expect(text.indexOf('Claude Opus 4.6 (Thinking)')).toBeLessThan(text.indexOf('Tab Flash Lite Preview'))
+    expect(text.indexOf('Gemini 3.5 Flash (Medium)')).toBeLessThan(text.indexOf('Tab Flash Lite Preview'))
     expect(text.indexOf('Tab Flash Lite Preview')).toBeLessThan(text.indexOf('chat_20706'))
+
+    unmount()
+  })
+
+  it('renders one row for duplicate quota labels and keeps the preferred active bucket', () => {
+    const { root, unmount } = mount({
+      antigravity: {
+        quota_by_model: {
+          'gemini-3.1-pro-high': {
+            display_name: 'Gemini 3.1 Pro (High)',
+            remaining_fraction: 0.95,
+            used_percent: 5,
+          },
+          'gemini-pro-agent': {
+            display_name: 'Gemini 3.1 Pro (High)',
+            remaining_fraction: 0.4,
+            used_percent: 60,
+          },
+          'gemini-3-flash-agent': {
+            display_name: 'Gemini 3.5 Flash (High)',
+            remaining_fraction: 0.9,
+            used_percent: 10,
+          },
+        },
+      },
+    })
+    const text = root.textContent || ''
+
+    expect(text.match(/Gemini 3\.1 Pro \(High\)/g)).toHaveLength(1)
+    expect(text).toContain('40.0%')
+    expect(text).not.toContain('95.0%')
+    expect(text.indexOf('Gemini 3.1 Pro (High)')).toBeLessThan(text.indexOf('Gemini 3.5 Flash (High)'))
 
     unmount()
   })
