@@ -1197,6 +1197,33 @@ mod tests {
     }
 
     #[test]
+    fn antigravity_generate_content_drops_client_api_key_query() {
+        let transport = sample_transport(
+            "antigravity",
+            "gemini:generate_content",
+            "https://daily-cloudcode-pa.googleapis.com",
+            None,
+        );
+
+        assert_eq!(
+            build_transport_request_url(
+                &transport,
+                TransportRequestUrlParams {
+                    provider_api_format: "gemini:generate_content",
+                    mapped_model: Some("gemini-3-flash-agent"),
+                    upstream_is_stream: true,
+                    request_query: Some("key=client-aether-key&trace=1&beta=true"),
+                    kiro_api_region: None,
+                },
+            )
+            .as_deref(),
+            Some(
+                "https://daily-cloudcode-pa.googleapis.com/v1internal:streamGenerateContent?alt=sse&trace=1"
+            )
+        );
+    }
+
+    #[test]
     fn embedding_request_url_preserves_google_openai_compat_roots() {
         let developer_api_openai = sample_transport(
             "custom",
