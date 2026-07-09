@@ -976,7 +976,13 @@ WHERE id = ?
             .bind(key.total_cost_usd)
             .bind(optional_i64_from_u32(key.success_count).unwrap_or(0))
             .bind(optional_i64_from_u32(key.error_count).unwrap_or(0))
-            .bind(optional_i64_from_u32(key.total_response_time_ms).unwrap_or(0))
+            .bind(
+                optional_i64_from_u64(
+                    key.total_response_time_ms,
+                    "provider_api_keys.total_response_time_ms",
+                )?
+                .unwrap_or(0),
+            )
             .bind(optional_i64_from_u64(
                 key.last_used_at_unix_secs,
                 "provider_api_keys.last_used_at",
@@ -1950,7 +1956,7 @@ fn map_key_row(row: &SqliteRow) -> Result<StoredProviderCatalogKey, DataLayerErr
                     row.try_get("error_count").map_sql_err()?,
                     "provider_api_keys.error_count",
                 )?,
-                optional_u32(
+                optional_u64(
                     row.try_get("total_response_time_ms").map_sql_err()?,
                     "provider_api_keys.total_response_time_ms",
                 )?,
@@ -2093,6 +2099,7 @@ mod tests {
             .expect("keys should list");
         assert_eq!(keys.len(), 1);
         assert_eq!(keys[0].total_tokens, 1234);
+        assert_eq!(keys[0].total_response_time_ms, Some(u32::MAX as u64 + 1));
         assert_eq!(keys[0].concurrent_limit, Some(3));
 
         let page = repository
@@ -2245,7 +2252,7 @@ mod tests {
             Some(10),
             Some(9),
         )
-        .with_usage_fields(Some(1), Some(250))
+        .with_usage_fields(Some(1), Some(u32::MAX as u64 + 42))
         .with_usage_totals(1234, 1.5)
         .with_health_fields(
             Some(json!({"openai:chat":{"score":1}})),
@@ -2259,6 +2266,10 @@ mod tests {
             .expect("key should create");
         assert_eq!(created_key.concurrent_limit, Some(3));
         assert_eq!(created_key.total_tokens, 1234);
+        assert_eq!(
+            created_key.total_response_time_ms,
+            Some(u32::MAX as u64 + 42)
+        );
         assert_eq!(
             created_key.last_models_fetch_error.as_deref(),
             Some("stale models fetch error")
@@ -2385,7 +2396,7 @@ INSERT INTO provider_api_keys (
 ) VALUES (
   'key-1', 'provider-1', 'default', 'enc-key', 'api_key',
   '{"cache_1h":true}', 1, '["openai:chat"]', '{"openai:chat":"api_key"}',
-  5, 120, 3, 10, 1234, 1.5, 9, 1, 250, '{"openai:chat":{"score":1}}',
+  5, 120, 3, 10, 1234, 1.5, 9, 1, 4294967296, '{"openai:chat":{"score":1}}',
   5, 6
 )
 "#,
