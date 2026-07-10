@@ -1,158 +1,160 @@
 <template>
   <div class="space-y-3">
-    <!-- 阶梯列表 -->
-    <div
-      v-for="(tier, index) in localTiers"
-      :key="index"
-      class="p-3 border rounded-lg bg-muted/20 space-y-3"
-    >
-      <!-- 阶梯头部 -->
-      <div class="flex items-center justify-between">
-        <div class="flex items-center gap-2 text-sm">
-          <span class="text-muted-foreground">{{ getTierStartLabel(index) }}</span>
-          <span class="text-muted-foreground">-</span>
-          <template v-if="index < localTiers.length - 1">
-            <template v-if="customInputMode[index]">
-              <Input
-                v-model="customInputValue[index]"
-                type="number"
-                min="1"
-                class="h-7 w-20 text-sm"
-                placeholder="K"
-                @keyup.enter="confirmCustomInput(index)"
-                @blur="confirmCustomInput(index)"
-              />
-              <span class="text-xs text-muted-foreground">K</span>
-            </template>
-            <select
-              v-else
-              :value="getSelectValue(index)"
-              class="h-7 px-2 text-sm border rounded bg-background"
-              @change="(e) => handleThresholdChange(index, parseInt((e.target as HTMLSelectElement).value))"
-            >
-              <option
-                v-for="opt in getAvailableThresholds(index)"
-                :key="opt.value"
-                :value="opt.value"
-              >
-                {{ opt.label }}
-              </option>
-            </select>
-          </template>
-          <span
-            v-else
-            class="font-medium"
-          >无上限</span>
-        </div>
-        <div class="flex items-center gap-1">
-          <Button
-            type="button"
-            variant="ghost"
-            size="sm"
-            class="h-7 px-2 text-xs text-muted-foreground"
-            @click="toggleCachePriceMode(index)"
-          >
-            <Repeat2 class="w-3.5 h-3.5 mr-1" />
-            {{ getCachePriceMode(index) === 'multiplier' ? '具体价格' : '输入倍率' }}
-          </Button>
-          <Button
-            v-if="localTiers.length > 1"
-            variant="ghost"
-            size="sm"
-            class="h-7 w-7 p-0"
-            @click="removeTier(index)"
-          >
-            <X class="w-4 h-4 text-muted-foreground hover:text-destructive" />
-          </Button>
-        </div>
-      </div>
-
-      <!-- 价格输入 -->
+    <template v-if="showTokenPricing !== false">
+      <!-- 阶梯列表 -->
       <div
-        class="grid grid-cols-4 gap-3"
+        v-for="(tier, index) in localTiers"
+        :key="index"
+        class="p-3 border rounded-lg bg-muted/20 space-y-3"
       >
-        <div class="space-y-1">
-          <Label class="text-xs">输入 ($/M)</Label>
-          <Input
-            :model-value="tier.input_price_per_1m"
-            type="number"
-            step="0.01"
-            min="0"
-            class="h-8"
-            placeholder="0"
-            @update:model-value="(v) => updateInputPrice(index, parseFloatInput(v))"
-          />
-        </div>
-        <div class="space-y-1">
-          <Label class="text-xs">输出 ($/M)</Label>
-          <Input
-            :model-value="tier.output_price_per_1m"
-            type="number"
-            step="0.01"
-            min="0"
-            class="h-8"
-            placeholder="0"
-            @update:model-value="(v) => updateOutputPrice(index, parseFloatInput(v))"
-          />
-        </div>
-        <div class="space-y-1">
-          <Label class="text-xs text-muted-foreground">
-            {{ getCachePriceMode(index) === 'multiplier' ? '缓存创建（输入倍率）' : '缓存创建 ($/M)' }}
-          </Label>
-          <div class="relative">
-            <Input
-              :model-value="getCacheCreationEditorValue(index)"
-              type="number"
-              step="0.01"
-              min="0"
-              class="h-8"
-              :class="getCachePriceMode(index) === 'multiplier' ? 'pr-7' : ''"
-              placeholder="0"
-              @update:model-value="(v) => updateCacheCreation(index, v)"
-            />
+        <!-- 阶梯头部 -->
+        <div class="flex items-center justify-between">
+          <div class="flex items-center gap-2 text-sm">
+            <span class="text-muted-foreground">{{ getTierStartLabel(index) }}</span>
+            <span class="text-muted-foreground">-</span>
+            <template v-if="index < localTiers.length - 1">
+              <template v-if="customInputMode[index]">
+                <Input
+                  v-model="customInputValue[index]"
+                  type="number"
+                  min="1"
+                  class="h-7 w-20 text-sm"
+                  placeholder="K"
+                  @keyup.enter="confirmCustomInput(index)"
+                  @blur="confirmCustomInput(index)"
+                />
+                <span class="text-xs text-muted-foreground">K</span>
+              </template>
+              <select
+                v-else
+                :value="getSelectValue(index)"
+                class="h-7 px-2 text-sm border rounded bg-background"
+                @change="(e) => handleThresholdChange(index, parseInt((e.target as HTMLSelectElement).value))"
+              >
+                <option
+                  v-for="opt in getAvailableThresholds(index)"
+                  :key="opt.value"
+                  :value="opt.value"
+                >
+                  {{ opt.label }}
+                </option>
+              </select>
+            </template>
             <span
-              v-if="getCachePriceMode(index) === 'multiplier'"
-              class="absolute right-2 top-1/2 -translate-y-1/2 text-xs text-muted-foreground"
-            >×</span>
+              v-else
+              class="font-medium"
+            >无上限</span>
+          </div>
+          <div class="flex items-center gap-1">
+            <Button
+              type="button"
+              variant="ghost"
+              size="sm"
+              class="h-7 px-2 text-xs text-muted-foreground"
+              @click="toggleCachePriceMode(index)"
+            >
+              <Repeat2 class="w-3.5 h-3.5 mr-1" />
+              {{ getCachePriceMode(index) === 'multiplier' ? '价格' : '倍率' }}
+            </Button>
+            <Button
+              v-if="localTiers.length > 1"
+              variant="ghost"
+              size="sm"
+              class="h-7 w-7 p-0"
+              @click="removeTier(index)"
+            >
+              <X class="w-4 h-4 text-muted-foreground hover:text-destructive" />
+            </Button>
           </div>
         </div>
-        <div class="space-y-1">
-          <Label class="text-xs text-muted-foreground">
-            {{ getCachePriceMode(index) === 'multiplier' ? '缓存读取（输入倍率）' : '缓存读取 ($/M)' }}
-          </Label>
-          <div class="relative">
+
+        <!-- 价格输入 -->
+        <div
+          class="grid grid-cols-4 gap-3"
+        >
+          <div class="space-y-1">
+            <Label class="text-xs">输入 ($/M)</Label>
             <Input
-              :model-value="getCacheReadEditorValue(index)"
+              :model-value="tier.input_price_per_1m"
               type="number"
               step="0.01"
               min="0"
               class="h-8"
-              :class="getCachePriceMode(index) === 'multiplier' ? 'pr-7' : ''"
               placeholder="0"
-              @update:model-value="(v) => updateCacheRead(index, v)"
+              @update:model-value="(v) => updateInputPrice(index, parseFloatInput(v))"
             />
-            <span
-              v-if="getCachePriceMode(index) === 'multiplier'"
-              class="absolute right-2 top-1/2 -translate-y-1/2 text-xs text-muted-foreground"
-            >×</span>
+          </div>
+          <div class="space-y-1">
+            <Label class="text-xs">输出 ($/M)</Label>
+            <Input
+              :model-value="tier.output_price_per_1m"
+              type="number"
+              step="0.01"
+              min="0"
+              class="h-8"
+              placeholder="0"
+              @update:model-value="(v) => updateOutputPrice(index, parseFloatInput(v))"
+            />
+          </div>
+          <div class="space-y-1">
+            <Label class="text-xs text-muted-foreground">
+              {{ getCachePriceMode(index) === 'multiplier' ? '创建（倍率）' : '创建 ($/M)' }}
+            </Label>
+            <div class="relative">
+              <Input
+                :model-value="getCacheCreationEditorValue(index)"
+                type="number"
+                step="0.01"
+                min="0"
+                class="h-8"
+                :class="getCachePriceMode(index) === 'multiplier' ? 'pr-7' : ''"
+                placeholder="0"
+                @update:model-value="(v) => updateCacheCreation(index, v)"
+              />
+              <span
+                v-if="getCachePriceMode(index) === 'multiplier'"
+                class="absolute right-2 top-1/2 -translate-y-1/2 text-xs text-muted-foreground"
+              >×</span>
+            </div>
+          </div>
+          <div class="space-y-1">
+            <Label class="text-xs text-muted-foreground">
+              {{ getCachePriceMode(index) === 'multiplier' ? '读取（倍率）' : '读取 ($/M)' }}
+            </Label>
+            <div class="relative">
+              <Input
+                :model-value="getCacheReadEditorValue(index)"
+                type="number"
+                step="0.01"
+                min="0"
+                class="h-8"
+                :class="getCachePriceMode(index) === 'multiplier' ? 'pr-7' : ''"
+                placeholder="0"
+                @update:model-value="(v) => updateCacheRead(index, v)"
+              />
+              <span
+                v-if="getCachePriceMode(index) === 'multiplier'"
+                class="absolute right-2 top-1/2 -translate-y-1/2 text-xs text-muted-foreground"
+              >×</span>
+            </div>
           </div>
         </div>
       </div>
-    </div>
 
-    <!-- 添加阶梯按钮 -->
-    <Button
-      variant="outline"
-      size="sm"
-      class="w-full"
-      @click="addTier"
-    >
-      <Plus class="w-4 h-4 mr-2" />
-      添加价格阶梯
-    </Button>
+      <!-- 添加阶梯按钮 -->
+      <Button
+        variant="outline"
+        size="sm"
+        class="w-full"
+        @click="addTier"
+      >
+        <Plus class="w-4 h-4 mr-2" />
+        添加价格阶梯
+      </Button>
+    </template>
 
     <div
-      v-if="showImagePricing"
+      v-if="showImagePricing && showImageEditor !== false"
       class="rounded-lg border bg-muted/10 p-3 space-y-3"
     >
       <div class="flex flex-wrap items-end justify-between gap-3">
@@ -288,7 +290,7 @@
 
     <!-- 验证提示 -->
     <p
-      v-if="validationError"
+      v-if="showTokenPricing !== false && validationError"
       class="text-xs text-destructive"
     >
       {{ validationError }}
@@ -326,7 +328,9 @@ type CacheMultiplierDraft = {
 
 const props = defineProps<{
   modelValue?: TieredPricingConfig | null
+  showTokenPricing?: boolean
   showImagePricing?: boolean
+  showImageEditor?: boolean
 }>()
 const emit = defineEmits<{
   'update:modelValue': [value: TieredPricingConfig | null]
@@ -352,6 +356,7 @@ const THRESHOLD_OPTIONS = [
   { value: 64000, label: '64K' },
   { value: 128000, label: '128K' },
   { value: 200000, label: '200K' },
+  { value: 272000, label: '272K' },
   { value: 500000, label: '500K' },
   { value: 1000000, label: '1M' },
   { value: -1, label: '自定义...' },  // 特殊值表示自定义输入
