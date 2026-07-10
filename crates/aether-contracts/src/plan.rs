@@ -115,6 +115,7 @@ pub struct ExecutionPlan {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub content_encoding: Option<String>,
     pub body: RequestBody,
+    /// Whether the upstream API uses a streaming response protocol.
     #[serde(default)]
     pub stream: bool,
     pub client_api_format: String,

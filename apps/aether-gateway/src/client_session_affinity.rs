@@ -307,7 +307,9 @@ impl ClientSessionScopeAdapter for GenericSessionScopeAdapter {
     }
 
     fn extract_scope(&self, request: &ClientSessionRequest<'_>) -> Option<ClientSessionScope> {
-        if let Some(root_session) = header_value_str(request.headers, "session_id")
+        if let Some(root_session) = header_value_str(request.headers, "session-id")
+            .or_else(|| header_value_str(request.headers, "thread-id"))
+            .or_else(|| header_value_str(request.headers, "session_id"))
             .or_else(|| header_value_str(request.headers, "conversation_id"))
         {
             return Some(ClientSessionScope::new(
@@ -367,7 +369,9 @@ impl ClientSessionScopeAdapter for CodexSessionScopeAdapter {
     }
 
     fn extract_scope(&self, request: &ClientSessionRequest<'_>) -> Option<ClientSessionScope> {
-        header_value_str(request.headers, "session_id")
+        header_value_str(request.headers, "session-id")
+            .or_else(|| header_value_str(request.headers, "thread-id"))
+            .or_else(|| header_value_str(request.headers, "session_id"))
             .or_else(|| header_value_str(request.headers, "conversation_id"))
             .map(|root_session| {
                 ClientSessionScope::new(
@@ -841,9 +845,10 @@ mod tests {
         let mut headers = HeaderMap::new();
         headers.insert(
             http::header::USER_AGENT,
-            HeaderValue::from_static("codex-tui/0.122.0"),
+            HeaderValue::from_static("codex_cli_rs/0.144.1"),
         );
-        headers.insert("session_id", HeaderValue::from_static("codex-session"));
+        headers.insert("session-id", HeaderValue::from_static("codex-session"));
+        headers.insert("thread-id", HeaderValue::from_static("codex-thread"));
 
         let affinity =
             client_session_affinity_from_request(&headers, None).expect("affinity should build");
@@ -860,7 +865,7 @@ mod tests {
         let mut headers = HeaderMap::new();
         headers.insert(
             http::header::USER_AGENT,
-            HeaderValue::from_static("codex-tui/0.122.0"),
+            HeaderValue::from_static("codex_cli_rs/0.144.1"),
         );
         headers.insert(
             "x-client-request-id",

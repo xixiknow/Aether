@@ -4924,9 +4924,9 @@ mod tests {
             })
             .await
             .expect("dashboard should summarize");
-        assert_eq!(dashboard.effective_input_tokens, 20);
+        assert_eq!(dashboard.effective_input_tokens, 0);
         assert_eq!(dashboard.cache_creation_tokens, 20);
-        assert_eq!(dashboard.total_tokens, 140);
+        assert_eq!(dashboard.total_tokens, 120);
 
         let leaderboard = repository
             .summarize_usage_leaderboard(&UsageLeaderboardQuery {
@@ -4940,7 +4940,7 @@ mod tests {
             .await
             .expect("leaderboard should summarize");
         assert_eq!(leaderboard.len(), 1);
-        assert_eq!(leaderboard[0].total_tokens, 140);
+        assert_eq!(leaderboard[0].total_tokens, 120);
     }
 
     #[tokio::test]

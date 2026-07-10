@@ -18,7 +18,8 @@ use crate::formats::shared::stream_core::common::{
     build_openai_chat_usage_chunk_with_cache,
 };
 use crate::formats::shared::stream_core::{
-    CanonicalStreamFrame, StreamingStandardFormatMatrix, StreamingStandardTerminalObserver,
+    CanonicalStreamEvent, CanonicalStreamFrame, StreamingStandardFormatMatrix,
+    StreamingStandardTerminalObserver,
 };
 use crate::formats::shared::stream_rewrite::maybe_build_ai_surface_stream_rewriter;
 use crate::formats::shared::AiSurfaceFinalizeError;
@@ -70,12 +71,21 @@ pub fn maybe_bridge_standard_sync_json_to_stream(
     {
         return Ok(None);
     }
-
     let bridge_context = build_bridge_report_context(
         report_context,
         provider_api_format.as_str(),
         client_api_format.as_str(),
     );
+    if is_openai_responses_family_api_format(provider_api_format.as_str())
+        && is_openai_responses_family_api_format(client_api_format.as_str())
+    {
+        return bridge_openai_responses_same_family_sync_json_to_stream(
+            provider_body_json,
+            provider_api_format.as_str(),
+            &bridge_context,
+        );
+    }
+
     let Some(openai_responses_response) = convert_provider_sync_response_to_openai_responses(
         provider_body_json,
         provider_api_format.as_str(),
@@ -95,6 +105,46 @@ pub fn maybe_bridge_standard_sync_json_to_stream(
     Ok(Some(SyncToStreamBridgeOutcome {
         sse_body,
         terminal_summary,
+    }))
+}
+
+fn bridge_openai_responses_same_family_sync_json_to_stream(
+    response: &Value,
+    provider_api_format: &str,
+    report_context: &Value,
+) -> Result<Option<SyncToStreamBridgeOutcome>, AiSurfaceFinalizeError> {
+    let bridge_response = if openai_responses_terminal_event_type(response).is_some() {
+        Cow::Borrowed(response)
+    } else if provider_api_format == "openai:responses:compact"
+        && response.get("output").is_some_and(Value::is_array)
+    {
+        let mut response = response.clone();
+        let object = response
+            .as_object_mut()
+            .expect("Compact response with output should be an object");
+        object.insert("status".to_string(), Value::String("completed".to_string()));
+        object
+            .entry("object".to_string())
+            .or_insert_with(|| Value::String("response.compaction".to_string()));
+        Cow::Owned(response)
+    } else {
+        return Ok(None);
+    };
+    let canonical_frames = build_canonical_frames_from_openai_responses_response(
+        bridge_response.as_ref(),
+        report_context,
+    )?;
+    let terminal_event_type = openai_responses_terminal_event_type(bridge_response.as_ref())
+        .expect("bridge response should have a terminal status");
+    let sse_body = emit_openai_responses_stream_with_authoritative_terminal(
+        canonical_frames,
+        response,
+        terminal_event_type,
+    )?;
+
+    Ok(Some(SyncToStreamBridgeOutcome {
+        sse_body,
+        terminal_summary: build_terminal_summary_from_openai_responses_response(response),
     }))
 }
 
@@ -462,6 +512,7 @@ fn openai_image_terminal_summary(
             .and_then(Value::as_str)
             .map(ToOwned::to_owned)
             .or_else(|| image_bridge_model(report_context)),
+        provider_actual_service_tier: None,
         observed_finish: true,
         unknown_event_count: 0,
         parser_error: None,
@@ -614,6 +665,10 @@ fn is_standard_api_format(value: &str) -> bool {
             | "claude:messages"
             | "gemini:generate_content"
     )
+}
+
+fn is_openai_responses_family_api_format(value: &str) -> bool {
+    matches!(value, "openai:responses" | "openai:responses:compact")
 }
 
 fn maybe_bridge_aether_sse_response_capture_to_stream(
@@ -922,10 +977,12 @@ fn build_canonical_frames_from_openai_responses_response(
     report_context: &Value,
 ) -> Result<Vec<CanonicalStreamFrame>, AiSurfaceFinalizeError> {
     let mut state = OpenAIResponsesProviderState::default();
+    let event_type = openai_responses_terminal_event_type(openai_responses_response)
+        .unwrap_or("response.completed");
     let line = format!(
         "data: {}\n",
         serde_json::to_string(&json!({
-            "type": "response.completed",
+            "type": event_type,
             "response": openai_responses_response,
         }))
         .map_err(|err| AiSurfaceFinalizeError::new(err.to_string()))?
@@ -939,6 +996,15 @@ fn build_canonical_frames_from_openai_responses_response(
             .map_err(|err| AiSurfaceFinalizeError::new(err.to_string()))?,
     );
     Ok(frames)
+}
+
+fn openai_responses_terminal_event_type(response: &Value) -> Option<&'static str> {
+    match response.get("status").and_then(Value::as_str) {
+        Some("completed") => Some("response.completed"),
+        Some("incomplete") => Some("response.incomplete"),
+        Some("failed") => Some("response.failed"),
+        _ => None,
+    }
 }
 
 fn emit_client_stream_from_canonical_frames(
@@ -1001,6 +1067,37 @@ fn emit_with_openai_responses_emitter(
     output.extend(
         emitter
             .finish()
+            .map_err(|err| AiSurfaceFinalizeError::new(err.to_string()))?,
+    );
+    Ok(output)
+}
+
+fn emit_openai_responses_stream_with_authoritative_terminal(
+    canonical_frames: Vec<CanonicalStreamFrame>,
+    authoritative_response: &Value,
+    terminal_event_type: &'static str,
+) -> Result<Vec<u8>, AiSurfaceFinalizeError> {
+    let mut emitter = OpenAIResponsesClientEmitter::default();
+    let mut output = Vec::new();
+    for frame in canonical_frames {
+        if matches!(
+            &frame.event,
+            CanonicalStreamEvent::Finish { .. } | CanonicalStreamEvent::UnknownEvent(_)
+        ) {
+            continue;
+        }
+        output.extend(
+            emitter
+                .emit(frame)
+                .map_err(|err| AiSurfaceFinalizeError::new(err.to_string()))?,
+        );
+    }
+    output.extend(
+        emitter
+            .finish_with_authoritative_response_event(
+                authoritative_response.clone(),
+                terminal_event_type,
+            )
             .map_err(|err| AiSurfaceFinalizeError::new(err.to_string()))?,
     );
     Ok(output)
@@ -1071,6 +1168,12 @@ fn build_terminal_summary_from_openai_responses_response(
         finish_reason,
         response_id,
         model,
+        provider_actual_service_tier: response
+            .get("service_tier")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty() && value.len() <= 64)
+            .map(str::to_ascii_lowercase),
         observed_finish: true,
         unknown_event_count: 0,
         parser_error: None,
@@ -1114,6 +1217,7 @@ fn standardized_usage_from_openai_usage(value: &Value) -> Option<StandardizedUsa
                     details
                         .get("cache_write_tokens")
                         .or_else(|| details.get("cached_creation_tokens"))
+                        .or_else(|| details.get("cache_creation_tokens"))
                 })
                 .and_then(Value::as_i64)
         })
@@ -1152,12 +1256,32 @@ fn standardized_usage_from_openai_usage(value: &Value) -> Option<StandardizedUsa
 
 #[cfg(test)]
 mod tests {
-    use serde_json::json;
+    use serde_json::{json, Value};
 
     use super::{maybe_bridge_standard_sync_json_to_stream, standardized_usage_from_openai_usage};
 
     fn utf8(bytes: Vec<u8>) -> String {
         String::from_utf8(bytes).expect("utf8 should decode")
+    }
+
+    fn json_sse_events(body: &str) -> Vec<Value> {
+        body.lines()
+            .filter_map(|line| line.strip_prefix("data: "))
+            .filter(|line| *line != "[DONE]")
+            .map(|line| serde_json::from_str(line).expect("valid SSE JSON"))
+            .collect()
+    }
+
+    fn assert_strictly_increasing_sequence_numbers(events: &[Value]) {
+        let sequence_numbers = events
+            .iter()
+            .filter_map(|event| event.get("sequence_number").and_then(Value::as_u64))
+            .collect::<Vec<_>>();
+        assert_eq!(sequence_numbers.len(), events.len());
+        assert!(
+            sequence_numbers.windows(2).all(|pair| pair[0] < pair[1]),
+            "sequence numbers must be strictly increasing: {sequence_numbers:?}"
+        );
     }
 
     #[test]
@@ -1174,6 +1298,140 @@ mod tests {
         assert_eq!(usage.input_tokens, 20_435);
         assert_eq!(usage.output_tokens, 177);
         assert_eq!(usage.cache_read_tokens, 19_840);
+    }
+
+    #[test]
+    fn bridges_same_family_responses_sync_with_standard_lifecycle_and_authoritative_terminal() {
+        let response = json!({
+            "id": "resp_gpt56_raw_bridge",
+            "object": "response",
+            "model": "gpt-5.6-sol",
+            "status": "completed",
+            "output": [
+                {
+                    "type": "program",
+                    "call_id": "program-call-1",
+                    "fingerprint": "fp-program-1"
+                },
+                {
+                    "type": "program_output",
+                    "call_id": "program-call-1",
+                    "result": "hello",
+                    "status": "completed"
+                },
+                {
+                    "type": "multi_agent_call",
+                    "call_id": "agent-call-1",
+                    "action": "delegate",
+                    "arguments": {"query": "release notes"},
+                    "agent": "researcher"
+                },
+                {
+                    "type": "agent_message",
+                    "author": "researcher",
+                    "recipient": "assistant",
+                    "encrypted_content": "encrypted-agent-message"
+                }
+            ],
+            "usage": {
+                "input_tokens": 20,
+                "input_tokens_details": {
+                    "cached_tokens": 4,
+                    "cache_write_tokens": 6
+                },
+                "output_tokens": 5,
+                "total_tokens": 25
+            }
+        });
+
+        let outcome = maybe_bridge_standard_sync_json_to_stream(
+            &response,
+            "openai:responses",
+            "openai:responses:compact",
+            None,
+        )
+        .expect("same-family raw bridge should succeed")
+        .expect("same-family raw bridge should emit terminal SSE");
+
+        let output = utf8(outcome.sse_body);
+        assert!(output.contains("event: response.created"));
+        assert!(output.contains("event: response.in_progress"));
+        let events = json_sse_events(&output);
+        assert_strictly_increasing_sequence_numbers(&events);
+        let event = events
+            .iter()
+            .find(|event| event["type"] == "response.completed")
+            .expect("terminal event data should exist");
+        assert_eq!(events.last(), Some(event));
+        assert_eq!(event["type"], "response.completed");
+        assert_eq!(event["response"], response);
+    }
+
+    #[test]
+    fn bridges_output_only_compact_json_without_reshaping_the_terminal_response() {
+        let response = json!({
+            "output": [{
+                "type": "compaction",
+                "id": "cmp_123",
+                "encrypted_content": "encrypted-compact-history"
+            }]
+        });
+
+        let outcome = maybe_bridge_standard_sync_json_to_stream(
+            &response,
+            "openai:responses:compact",
+            "openai:responses:compact",
+            None,
+        )
+        .expect("Compact bridge should succeed")
+        .expect("Compact output should emit terminal SSE");
+
+        let output = utf8(outcome.sse_body);
+        assert!(output.contains("event: response.created"));
+        assert!(output.contains("event: response.in_progress"));
+        let events = json_sse_events(&output);
+        let terminal = events
+            .iter()
+            .find(|event| event["type"] == "response.completed")
+            .expect("Compact terminal event should exist");
+        assert_eq!(terminal["response"], response);
+        assert_eq!(events.last(), Some(terminal));
+    }
+
+    #[test]
+    fn bridges_failed_same_family_responses_sync_with_authoritative_terminal() {
+        let response = json!({
+            "id": "resp_gpt56_failed",
+            "object": "response",
+            "model": "gpt-5.6-sol",
+            "status": "failed",
+            "error": {"code": "server_error", "message": "upstream failed"},
+            "output": [{
+                "type": "program",
+                "call_id": "program-call-1",
+                "fingerprint": "fp-program-1"
+            }]
+        });
+
+        let outcome = maybe_bridge_standard_sync_json_to_stream(
+            &response,
+            "openai:responses",
+            "openai:responses",
+            None,
+        )
+        .expect("failed same-family raw bridge should succeed")
+        .expect("failed response should emit terminal SSE");
+
+        let output = utf8(outcome.sse_body);
+        let events = json_sse_events(&output);
+        assert_strictly_increasing_sequence_numbers(&events);
+        let event = events
+            .iter()
+            .find(|event| event["type"] == "response.failed")
+            .expect("terminal event data should exist");
+        assert_eq!(events.last(), Some(event));
+        assert_eq!(event["type"], "response.failed");
+        assert_eq!(event["response"], response);
     }
 
     #[test]
@@ -1284,6 +1542,7 @@ mod tests {
         assert!(output.contains("\"finish_reason\":\"stop\""));
         assert!(output.contains("\"cached_tokens\":20"));
         assert!(output.contains("\"cache_write_tokens\":10"));
+        assert!(!output.contains("\"cached_creation_tokens\""));
         assert!(output.contains("data: [DONE]"));
         assert!(!output.contains("image_generation.completed"));
 

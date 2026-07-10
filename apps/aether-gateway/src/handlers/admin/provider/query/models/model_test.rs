@@ -828,14 +828,12 @@ fn provider_query_resolve_standard_test_upstream_is_stream(
     provider_type: &str,
     provider_api_format: &str,
 ) -> bool {
-    let hard_requires_streaming = crate::ai_serving::force_upstream_streaming_for_provider(
+    crate::ai_serving::resolve_upstream_is_stream_for_provider(
+        endpoint_config,
         provider_type,
         provider_api_format,
-    );
-    crate::ai_serving::resolve_upstream_is_stream_from_endpoint_config(
-        endpoint_config,
         false,
-        hard_requires_streaming,
+        false,
     )
 }
 
@@ -2095,8 +2093,18 @@ async fn provider_query_execute_openai_image_test_candidate(
         route_path,
     );
     let incoming_request_headers = provider_query_extract_request_headers(payload);
+    let image_request_path = if request_body.get("image").is_some()
+        || request_body
+            .get("images")
+            .and_then(Value::as_array)
+            .is_some_and(|images| !images.is_empty())
+    {
+        "/v1/images/edits"
+    } else {
+        "/v1/images/generations"
+    };
     let mut synthetic_request = http::Request::builder()
-        .uri("/v1/images/generations")
+        .uri(image_request_path)
         .body(())
         .map_err(|err| GatewayError::Internal(err.to_string()))?;
     *synthetic_request.headers_mut() = incoming_request_headers;
@@ -2107,11 +2115,18 @@ async fn provider_query_execute_openai_image_test_candidate(
         &parts,
         &request_body,
         None,
-        provider_query_openai_image_normalize_options(provider_type),
+        provider_query_openai_image_normalize_options(
+            provider_type,
+            Some(candidate.effective_model.as_str()),
+        ),
     ) else {
         return Ok(provider_query_skipped_execution_outcome(
             request_body.clone(),
-            provider_query_openai_image_normalize_failure_message(provider_type, &request_body),
+            provider_query_openai_image_normalize_failure_message(
+                provider_type,
+                Some(candidate.effective_model.as_str()),
+                &request_body,
+            ),
         ));
     };
 
@@ -2130,29 +2145,50 @@ async fn provider_query_execute_openai_image_test_candidate(
         .provider_type
         .trim()
         .eq_ignore_ascii_case("codex");
-    let mut provider_request_body = if is_chatgpt_web {
-        match crate::ai_serving::build_chatgpt_web_image_request_body(&parts, &request_body, None) {
-            Ok(body) => body,
-            Err(err) => err.to_error_json(),
-        }
-    } else if is_codex || is_grok {
-        crate::ai_serving::build_openai_image_provider_request_body(&normalized_request)
+    let upstream_is_stream = crate::ai_serving::resolve_upstream_is_stream_for_provider(
+        transport.endpoint.config.as_ref(),
+        transport.provider.provider_type.as_str(),
+        "openai:image",
+        request_body
+            .get("stream")
+            .and_then(Value::as_bool)
+            .unwrap_or(false),
+        false,
+    );
+    let provider_request_body = if is_chatgpt_web {
+        Some(
+            match crate::ai_serving::build_chatgpt_web_image_request_body(
+                &parts,
+                &request_body,
+                None,
+            ) {
+                Ok(body) => body,
+                Err(err) => err.to_error_json(),
+            },
+        )
+    } else if is_codex {
+        crate::ai_serving::build_codex_openai_image_api_provider_request_body(
+            &normalized_request,
+            Some(candidate.effective_model.as_str()),
+            upstream_is_stream,
+        )
+    } else if is_grok {
+        Some(crate::ai_serving::build_openai_image_provider_request_body(
+            &normalized_request,
+        ))
     } else {
         crate::ai_serving::build_openai_image_api_provider_request_body(
             &normalized_request,
             Some(candidate.effective_model.as_str()),
+            upstream_is_stream,
         )
     };
-    if !is_chatgpt_web {
-        crate::ai_serving::apply_codex_openai_responses_special_body_edits(
-            &mut provider_request_body,
-            transport.provider.provider_type.as_str(),
-            "openai:image",
-            transport.endpoint.body_rules.as_ref(),
-            Some(candidate.key.id.as_str()),
-        );
-    }
-
+    let Some(provider_request_body) = provider_request_body else {
+        return Ok(provider_query_skipped_execution_outcome(
+            request_body,
+            "Provider request is outside the Codex Images contract",
+        ));
+    };
     let oauth_auth = state.resolve_local_oauth_header_auth(&transport).await?;
     let Some((auth_header, auth_value)) =
         crate::provider_transport::resolve_openai_image_auth(&transport).or(oauth_auth)
@@ -2184,10 +2220,12 @@ async fn provider_query_execute_openai_image_test_candidate(
                 headers: &parts.headers,
                 auth_header: &auth_header,
                 auth_value: &auth_value,
-                accept: if is_codex || is_chatgpt_web {
-                    "text/event-stream"
+                accept: if is_codex {
+                    None
+                } else if upstream_is_stream {
+                    Some("text/event-stream")
                 } else {
-                    "application/json"
+                    Some("application/json")
                 },
                 header_rules: transport.endpoint.header_rules.as_ref(),
                 provider_request_body: &provider_request_body,
@@ -2212,7 +2250,7 @@ async fn provider_query_execute_openai_image_test_candidate(
         request_headers.insert("x-aether-chatgpt-web-image".to_string(), "1".to_string());
     } else if is_grok {
     } else {
-        crate::ai_serving::apply_codex_openai_responses_special_headers(
+        crate::ai_serving::apply_codex_openai_special_headers(
             &mut request_headers,
             &provider_request_body,
             &parts.headers,
@@ -2251,13 +2289,9 @@ async fn provider_query_execute_openai_image_test_candidate(
     };
     let request_url = provider_query_openai_image_test_upstream_url(
         &transport,
-        Some(parts.uri.path()),
+        Some(image_request_path),
         parts.uri.query(),
     );
-    let upstream_is_stream = provider_request_body
-        .get("stream")
-        .and_then(Value::as_bool)
-        .unwrap_or(true);
 
     let plan = ExecutionPlan {
         request_id: trace_id.to_string(),
@@ -3034,6 +3068,37 @@ async fn provider_query_execute_standard_test_candidate(
         upstream_is_stream,
         require_body_stream_field,
     );
+    let source_model = provider_query_request_body_model(&request_body, request_model);
+    let codex_model_capabilities = crate::ai_serving::codex_model_capabilities_for_transport(
+        &transport,
+        provider_api_format,
+        request_model,
+        source_model,
+    );
+    if matches!(
+        normalized_provider_api_format.as_str(),
+        "openai:chat" | "openai:responses" | "openai:responses:compact"
+    ) && crate::ai_serving::finalize_openai_provider_request_with_codex_model_capabilities(
+        &mut provider_request_body,
+        crate::ai_serving::OpenAiProviderRequestFinalization {
+            source_api_format: client_api_format,
+            provider_api_format,
+            provider_type: transport.provider.provider_type.as_str(),
+            provider_model: request_model,
+            source_model,
+            body_rules: transport.endpoint.body_rules.as_ref(),
+            upstream_is_stream,
+            require_body_stream_field,
+        },
+        codex_model_capabilities.as_ref(),
+    )
+    .is_err()
+    {
+        return Ok(provider_query_skipped_execution_outcome(
+            provider_request_body,
+            "Provider request body violates the OpenAI provider contract",
+        ));
+    }
     if crate::provider_transport::is_gemini_cli_provider_transport(&transport)
         && normalized_provider_api_format == "gemini:generate_content"
     {
@@ -3256,8 +3321,8 @@ async fn provider_query_execute_standard_test_candidate(
             response_body: None,
         });
     }
-    if crate::ai_serving::is_openai_responses_format(provider_api_format) {
-        crate::ai_serving::apply_codex_openai_responses_special_headers(
+    if crate::ai_serving::is_openai_responses_family_format(provider_api_format) {
+        crate::ai_serving::apply_codex_openai_special_headers(
             &mut request_headers,
             &provider_request_body,
             &parts.headers,
@@ -3266,9 +3331,17 @@ async fn provider_query_execute_standard_test_candidate(
             Some(trace_id),
             transport.key.decrypted_auth_config.as_deref(),
         );
-        crate::provider_transport::apply_local_auth_config_header_overrides(
+        let final_provider_model = provider_request_body
+            .get("model")
+            .and_then(Value::as_str)
+            .unwrap_or(request_model);
+        crate::ai_serving::apply_codex_openai_responses_lite_header_with_capabilities(
             &mut request_headers,
-            transport.key.decrypted_auth_config.as_deref(),
+            transport.provider.provider_type.as_str(),
+            provider_api_format,
+            final_provider_model,
+            source_model,
+            codex_model_capabilities.as_ref(),
         );
     }
     if !uses_vertex_query_auth {

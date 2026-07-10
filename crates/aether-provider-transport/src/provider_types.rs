@@ -310,7 +310,7 @@ const CODEX_FIXED_PROVIDER_TEMPLATE: FixedProviderTemplate = FixedProviderTempla
             item_key: "openai:image",
             api_format: "openai:image",
             custom_path: None,
-            config_defaults: FORCE_STREAM_ENDPOINT_CONFIG_DEFAULTS,
+            config_defaults: EMPTY_ENDPOINT_CONFIG_DEFAULTS,
         },
     ],
     runtime_policy: CODEX_RUNTIME_POLICY,
@@ -659,17 +659,7 @@ mod tests {
         let image_template =
             fixed_provider_endpoint_template_by_api_format("codex", "openai:image")
                 .expect("codex image endpoint should exist");
-        assert_eq!(
-            image_template
-                .config_defaults
-                .iter()
-                .map(|item| (item.key, item.value))
-                .collect::<Vec<_>>(),
-            vec![(
-                "upstream_stream_policy",
-                FixedProviderEndpointConfigValue::String("force_stream")
-            )]
-        );
+        assert!(image_template.config_defaults.is_empty());
     }
 
     #[test]

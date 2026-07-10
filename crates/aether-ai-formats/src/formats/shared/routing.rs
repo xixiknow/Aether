@@ -96,14 +96,6 @@ pub fn resolve_execution_runtime_stream_plan_kind(
     }
 
     if route_family == Some("openai")
-        && is_openai_responses_compact_route_kind(route_kind)
-        && *method == Method::POST
-        && path == "/v1/responses/compact"
-    {
-        return Some(OPENAI_RESPONSES_COMPACT_STREAM_PLAN_KIND);
-    }
-
-    if route_family == Some("openai")
         && route_kind == Some("image")
         && *method == Method::POST
         && matches!(path, "/v1/images/generations" | "/v1/images/edits")
@@ -402,11 +394,13 @@ pub fn is_matching_stream_request(
     path: &str,
     body_json: &serde_json::Value,
 ) -> bool {
+    if plan_kind == OPENAI_RESPONSES_COMPACT_STREAM_PLAN_KIND {
+        return false;
+    }
     match plan_kind {
         OPENAI_CHAT_STREAM_PLAN_KIND
         | CLAUDE_CHAT_STREAM_PLAN_KIND
         | OPENAI_RESPONSES_STREAM_PLAN_KIND
-        | OPENAI_RESPONSES_COMPACT_STREAM_PLAN_KIND
         | CLAUDE_CLI_STREAM_PLAN_KIND
         | OPENAI_IMAGE_STREAM_PLAN_KIND
         | GEMINI_INTERACTIONS_STREAM_PLAN_KIND => body_json
@@ -468,7 +462,6 @@ pub fn supports_stream_execution_decision_kind(plan_kind: &str) -> bool {
             | CLAUDE_CHAT_STREAM_PLAN_KIND
             | GEMINI_CHAT_STREAM_PLAN_KIND
             | OPENAI_RESPONSES_STREAM_PLAN_KIND
-            | OPENAI_RESPONSES_COMPACT_STREAM_PLAN_KIND
             | OPENAI_IMAGE_STREAM_PLAN_KIND
             | CLAUDE_CLI_STREAM_PLAN_KIND
             | GEMINI_CLI_STREAM_PLAN_KIND
@@ -592,7 +585,7 @@ mod tests {
                 &Method::POST,
                 "/v1/responses/compact",
             ),
-            Some(OPENAI_RESPONSES_COMPACT_STREAM_PLAN_KIND)
+            None
         );
         assert_eq!(
             resolve_execution_runtime_sync_plan_kind(
@@ -608,7 +601,7 @@ mod tests {
         assert!(supports_sync_execution_decision_kind(
             OPENAI_RESPONSES_COMPACT_SYNC_PLAN_KIND
         ));
-        assert!(supports_stream_execution_decision_kind(
+        assert!(!supports_stream_execution_decision_kind(
             OPENAI_RESPONSES_COMPACT_STREAM_PLAN_KIND
         ));
     }

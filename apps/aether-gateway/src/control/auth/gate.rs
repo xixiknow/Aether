@@ -70,12 +70,10 @@ pub(crate) async fn request_model_local_rejection(
     ) {
         if !contains_string(allowed_models, requested_model)
             && !model_directive_base_model_is_allowed_for_request(
-                state,
                 decision,
                 requested_model,
                 allowed_models,
             )
-            .await
             && !request_model_resolves_to_allowed_model(
                 state,
                 decision,
@@ -417,18 +415,11 @@ fn estimate_text_tokens(text: &str) -> u64 {
     chars.div_ceil(4).max(1)
 }
 
-async fn model_directive_base_model_is_allowed_for_request(
-    state: &AppState,
+fn model_directive_base_model_is_allowed_for_request(
     decision: &GatewayControlDecision,
     requested_model: &str,
     allowed_models: &[String],
 ) -> bool {
-    let Some(base_model) = crate::ai_serving::model_directive_base_model(requested_model) else {
-        return false;
-    };
-    if !contains_string(allowed_models, &base_model) {
-        return false;
-    }
     let Some(client_api_format) = decision
         .auth_endpoint_signature
         .as_deref()
@@ -438,12 +429,12 @@ async fn model_directive_base_model_is_allowed_for_request(
         return false;
     };
     for api_format in candidate_api_formats_for_model_resolution(&client_api_format) {
-        if crate::system_features::reasoning_model_directive_enabled_for_api_format_and_model(
-            state,
-            &api_format,
-            Some(requested_model),
-        )
-        .await
+        let resolution = decision
+            .model_directive_policy
+            .resolve_reasoning(&api_format, Some(requested_model));
+        if resolution
+            .base_model()
+            .is_some_and(|base_model| contains_string(allowed_models, base_model))
         {
             return true;
         }
@@ -467,13 +458,10 @@ async fn request_model_resolves_to_allowed_model(
     };
 
     for api_format in candidate_api_formats_for_model_resolution(&client_api_format) {
-        let enable_model_directives =
-            crate::system_features::reasoning_model_directive_enabled_for_api_format_and_model(
-                state,
-                &api_format,
-                Some(requested_model),
-            )
-            .await;
+        let resolution = decision
+            .model_directive_policy
+            .resolve_reasoning(&api_format, Some(requested_model));
+        let routing_model = resolution.base_model().unwrap_or(requested_model);
         let rows = state
             .list_minimal_candidate_selection_rows_for_api_format(&api_format)
             .await?;
@@ -482,18 +470,18 @@ async fn request_model_resolves_to_allowed_model(
             .filter(|row| {
                 aether_scheduler_core::row_supports_requested_model_with_model_directives(
                     row,
-                    requested_model,
+                    routing_model,
                     &api_format,
-                    enable_model_directives,
+                    false,
                 )
             })
             .collect::<Vec<_>>();
         let Some(resolved_global_model) =
             aether_scheduler_core::resolve_requested_global_model_name_with_model_directives(
                 &matching_rows,
-                requested_model,
+                routing_model,
                 &api_format,
-                enable_model_directives,
+                false,
             )
         else {
             continue;
@@ -875,6 +863,58 @@ mod tests {
                 model: "gpt-5.2".to_string(),
             })
         );
+    }
+
+    #[tokio::test]
+    async fn model_rejection_reuses_request_policy_snapshot_for_directive_base_model() {
+        let state = state_with_rows(Vec::new());
+        let mut decision = decision_with_allowed_models(vec!["gpt-5.6-sol".to_string()]);
+        decision.model_directive_policy =
+            crate::system_features::ModelDirectivePolicySnapshot::from_config_values(
+                Some(&json!(true)),
+                None,
+            );
+        let uri: Uri = "/v1/chat/completions".parse().expect("uri should parse");
+        let body = Bytes::from_static(br#"{"model":"gpt-5.6-sol-high","messages":[]}"#);
+
+        let rejection =
+            request_model_local_rejection(&state, Some(&decision), &uri, &json_headers(), &body)
+                .await
+                .expect("model rejection should resolve");
+
+        assert_eq!(rejection, None);
+    }
+
+    #[tokio::test]
+    async fn model_rejection_uses_custom_policy_suffix_for_base_model_authorization() {
+        let state = state_with_rows(Vec::new());
+        let mut decision = decision_with_allowed_models(vec!["deployment-alias".to_string()]);
+        decision.model_directive_policy =
+            crate::system_features::ModelDirectivePolicySnapshot::from_config_values(
+                Some(&json!(true)),
+                Some(&json!({
+                    "reasoning_effort": {
+                        "api_formats": {
+                            "openai:chat": {
+                                "suffixes": ["VendorFuture"],
+                                "mappings": {
+                                    "VendorFuture": { "reasoning_effort": "high" }
+                                }
+                            }
+                        }
+                    }
+                })),
+            );
+        let uri: Uri = "/v1/chat/completions".parse().expect("uri should parse");
+        let body =
+            Bytes::from_static(br#"{"model":"deployment-alias-VendorFuture","messages":[]}"#);
+
+        let rejection =
+            request_model_local_rejection(&state, Some(&decision), &uri, &json_headers(), &body)
+                .await
+                .expect("model rejection should resolve");
+
+        assert_eq!(rejection, None);
     }
 
     #[tokio::test]

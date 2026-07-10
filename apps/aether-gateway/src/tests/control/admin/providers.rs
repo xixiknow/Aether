@@ -1122,7 +1122,7 @@ async fn gateway_creates_admin_provider_locally_with_trusted_admin_principal() {
             .as_ref()
             .and_then(|value| value.get("upstream_stream_policy"))
             .and_then(serde_json::Value::as_str),
-        Some("force_stream")
+        None
     );
     assert!(responses_endpoint.body_rules.is_none());
     assert!(compact_endpoint.body_rules.is_none());
@@ -1248,7 +1248,7 @@ async fn gateway_updates_fixed_provider_and_reconciles_template_managed_endpoint
             .as_ref()
             .and_then(|value| value.get("upstream_stream_policy"))
             .and_then(serde_json::Value::as_str),
-        Some("force_stream")
+        None
     );
     let keys = provider_catalog_repository
         .list_keys_by_provider_ids(&["provider-codex".to_string()])

@@ -61,6 +61,18 @@ pub use crate::formats::openai::shared::{
     map_openai_reasoning_effort_to_claude_output, map_openai_reasoning_effort_to_gemini_budget,
     parse_openai_stop_sequences, resolve_openai_chat_max_tokens, value_as_u64,
 };
+pub use crate::formats::openai::{
+    reasoning::{
+        validate_openai_reasoning_request, OpenAiReasoningContractViolation,
+        OpenAiReasoningViolationKind,
+    },
+    request_contract::{
+        finalize_openai_provider_request,
+        finalize_openai_provider_request_with_codex_model_capabilities,
+        validate_openai_provider_request_contract, OpenAiProviderRequestContractViolation,
+        OpenAiProviderRequestFinalization,
+    },
+};
 pub use crate::formats::shared::error_body::{
     build_core_error_body_for_client_format, is_core_error_finalize_kind, LocalCoreSyncErrorKind,
 };
@@ -78,9 +90,16 @@ pub use crate::formats::shared::image_bridge::{
 pub use crate::formats::shared::model_directives::{
     apply_model_directive_mapping_patch, apply_model_directive_overrides_from_model,
     apply_model_directive_overrides_from_request, claude_model_uses_adaptive_effort,
-    extract_gemini_model_from_path, gemini_model_uses_thinking_level, model_directive_base_model,
-    normalize_model_directive_model, parse_model_directive, ModelDirective, ModelOverride,
-    ReasoningEffort, ServiceTier,
+    default_model_directive_mapping_patch, default_model_directive_suffixes,
+    default_model_directives_config, extract_gemini_model_from_path,
+    gemini_model_uses_thinking_level, model_directive_base_model,
+    model_directive_builtin_suffix_supported_for_source_model,
+    model_directive_suffix_has_builtin_mapping, normalize_model_directive_model,
+    openai_model_supports_prompt_cache_options, parse_model_directive,
+    parse_model_directive_with_suffixes, reasoning_effort_supported_for_model, ModelDirective,
+    ModelDirectiveSuffixResolution, ModelOverride, ReasoningEffort, ServiceTier,
+    CROSS_PROVIDER_MODEL_DIRECTIVE_SUFFIXES, MODEL_DIRECTIVE_API_FORMATS,
+    OPENAI_MODEL_DIRECTIVE_SUFFIXES,
 };
 pub use crate::formats::shared::passthrough::{
     resolve_stream_spec as resolve_local_same_format_stream_spec,
@@ -89,7 +108,8 @@ pub use crate::formats::shared::passthrough::{
 };
 pub use crate::formats::shared::request::{
     endpoint_config_forces_upstream_stream_policy, enforce_request_body_stream_field,
-    force_upstream_streaming_for_provider, parse_direct_request_body,
+    forbid_upstream_streaming_for_provider, force_upstream_streaming_for_provider,
+    parse_direct_request_body, resolve_upstream_is_stream_for_provider,
     resolve_upstream_is_stream_from_endpoint_config,
 };
 pub use crate::formats::shared::request_matrix::{
@@ -149,11 +169,17 @@ pub use crate::formats::{
         embedding::spec::resolve_sync_spec as resolve_openai_embedding_sync_spec,
         responses::{
             codex::{
+                apply_codex_openai_compact_terminal_headers,
                 apply_codex_openai_responses_chat_body_edits,
+                apply_codex_openai_responses_lite_header_with_capabilities,
                 apply_codex_openai_responses_special_body_edits,
-                apply_codex_openai_responses_special_headers,
+                apply_codex_openai_responses_special_body_edits_with_source_model_and_capabilities,
+                apply_codex_openai_special_headers,
                 apply_openai_responses_compact_special_body_edits,
-                CODEX_OPENAI_IMAGE_DEFAULT_MODEL, CODEX_OPENAI_IMAGE_DEFAULT_OUTPUT_FORMAT,
+                build_codex_model_catalog_metadata, parse_codex_auth_identity,
+                resolve_codex_responses_model_capabilities, CodexAuthIdentity,
+                CodexResponsesModelCapabilities, CODEX_OPENAI_IMAGE_DEFAULT_MODEL,
+                CODEX_OPENAI_IMAGE_DEFAULT_OUTPUT_FORMAT,
                 CODEX_OPENAI_IMAGE_DEFAULT_VARIATION_MODEL,
                 CODEX_OPENAI_IMAGE_DEFAULT_VARIATION_PROMPT, CODEX_OPENAI_IMAGE_INTERNAL_MODEL,
             },
@@ -189,10 +215,13 @@ pub use crate::formats::{
     },
     openai::image::{
         request::{
-            build_chatgpt_web_image_request_body, build_openai_image_api_provider_request_body,
-            build_openai_image_provider_request_body, default_model_for_openai_image_operation,
-            is_openai_image_stream_request, normalize_openai_image_request,
+            build_chatgpt_web_image_request_body,
+            build_codex_openai_image_api_provider_request_body,
+            build_openai_image_api_provider_request_body, build_openai_image_provider_request_body,
+            default_model_for_openai_image_operation, is_openai_image_stream_request,
+            normalize_openai_image_quality, normalize_openai_image_request,
             normalize_openai_image_request_with_options, openai_image_operation_from_path,
+            project_codex_openai_image_api_request_body, project_openai_image_api_request_body,
             resolve_requested_openai_image_model_for_request, ChatGptWebImageRequestError,
             NormalizedOpenAiImageRequest, OpenAiImageNormalizeOptions, OpenAiImageOperation,
             OpenAiImageResponseFormat,

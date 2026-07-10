@@ -338,6 +338,11 @@ fn provider_query_standard_test_resolves_codex_responses_upstream_streaming() {
         "openai:responses:compact",
     ));
     assert!(!provider_query_resolve_standard_test_upstream_is_stream(
+        Some(&json!({"upstream_stream_policy": "force_stream"})),
+        "codex",
+        "openai:responses:compact",
+    ));
+    assert!(!provider_query_resolve_standard_test_upstream_is_stream(
         None,
         "custom",
         "openai:responses",
@@ -997,7 +1002,7 @@ fn provider_query_grok_image_test_allows_multi_generation_count() {
         &parts,
         &body,
         None,
-        provider_query_openai_image_normalize_options("grok"),
+        provider_query_openai_image_normalize_options("grok", Some("grok-imagine-image")),
     )
     .expect("grok image model tests should allow multi-image generation");
     let provider_body = crate::ai_serving::build_openai_image_provider_request_body(&normalized);
@@ -1065,12 +1070,48 @@ fn provider_query_non_grok_image_test_keeps_single_generation_boundary() {
             &parts,
             &body,
             None,
-            provider_query_openai_image_normalize_options("chatgpt_web"),
+            provider_query_openai_image_normalize_options("chatgpt_web", Some("gpt-image-2")),
         )
         .is_none()
     );
     assert_eq!(
-        provider_query_openai_image_normalize_failure_message("chatgpt_web", &body),
+        provider_query_openai_image_normalize_failure_message(
+            "chatgpt_web",
+            Some("gpt-image-2"),
+            &body,
+        ),
+        "Provider request body could not be normalized for openai:image: selected provider supports n=1..1 for generation"
+    );
+}
+
+#[test]
+fn provider_query_dall_e_3_image_test_keeps_single_generation_boundary() {
+    let request = http::Request::builder()
+        .uri("/v1/images/generations")
+        .body(())
+        .expect("request should build");
+    let (parts, _) = request.into_parts();
+    let body = json!({
+        "model": "dall-e-3",
+        "prompt": "draw",
+        "n": 2
+    });
+
+    assert!(
+        crate::ai_serving::normalize_openai_image_request_with_options(
+            &parts,
+            &body,
+            None,
+            provider_query_openai_image_normalize_options("openai", Some("dall-e-3")),
+        )
+        .is_none()
+    );
+    assert_eq!(
+        provider_query_openai_image_normalize_failure_message(
+            "openai",
+            Some("dall-e-3"),
+            &body,
+        ),
         "Provider request body could not be normalized for openai:image: selected provider supports n=1..1 for generation"
     );
 }

@@ -851,6 +851,9 @@ fn merge_stream_terminal_summary(
     if current_summary.model.is_none() {
         current_summary.model = observed.model;
     }
+    if observed.provider_actual_service_tier.is_some() {
+        current_summary.provider_actual_service_tier = observed.provider_actual_service_tier;
+    }
     current_summary.observed_finish |= observed.observed_finish;
     current_summary.unknown_event_count = current_summary
         .unknown_event_count

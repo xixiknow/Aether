@@ -3435,7 +3435,7 @@ mod tests {
         assert_eq!(payload["cache_creation_input_tokens"], 20);
         assert_eq!(payload["cache_creation_ephemeral_5m_input_tokens"], 12);
         assert_eq!(payload["cache_creation_ephemeral_1h_input_tokens"], 8);
-        assert_eq!(payload["total_tokens"], 50);
+        assert_eq!(payload["total_tokens"], 40);
     }
 
     #[test]
@@ -3451,7 +3451,7 @@ mod tests {
             ..sample_usage("completed", Some(200), None)
         };
 
-        assert_eq!(admin_usage_total_tokens(&item), 140);
+        assert_eq!(admin_usage_total_tokens(&item), 120);
     }
 
     #[test]

@@ -559,7 +559,7 @@ async fn gateway_handles_admin_provider_query_models_falls_back_to_codex_preset_
                     .expect("mutex should lock") += 1;
                 assert_eq!(
                     plan.url,
-                    "https://chatgpt.com/backend-api/codex/models?client_version=0.128.0-alpha.1"
+                    "https://chatgpt.com/backend-api/codex/models?client_version=0.144.1"
                 );
                 Json(json!({
                     "request_id": "req-provider-query-codex-invalidated",
@@ -625,6 +625,11 @@ async fn gateway_handles_admin_provider_query_models_falls_back_to_codex_preset_
     let payload: serde_json::Value = response.json().await.expect("json body should parse");
     assert_eq!(payload["success"], json!(true));
     assert_eq!(payload["data"]["error"], serde_json::Value::Null);
+    let warning = payload["data"]["warning"]
+        .as_str()
+        .expect("Codex fallback warning should be present");
+    assert!(warning.contains("Codex 动态模型目录不可用"));
+    assert!(warning.contains("invalidated"));
     let model_ids = payload["data"]["models"]
         .as_array()
         .expect("models should be an array")
@@ -634,11 +639,14 @@ async fn gateway_handles_admin_provider_query_models_falls_back_to_codex_preset_
     assert_eq!(
         model_ids,
         vec![
-            "gpt-5.3-codex",
-            "gpt-5.3-codex-spark",
+            "codex-auto-review",
+            "gpt-5.2",
             "gpt-5.4",
             "gpt-5.4-mini",
             "gpt-5.5",
+            "gpt-5.6-luna",
+            "gpt-5.6-sol",
+            "gpt-5.6-terra",
         ]
     );
     assert_eq!(
@@ -3837,13 +3845,12 @@ async fn gateway_handles_openai_responses_test_model_locally_impl() {
                     .and_then(|value| value.as_str()),
                 Some(prompt)
             );
-            assert_eq!(
-                plan.body
-                    .json_body
-                    .as_ref()
-                    .and_then(|body| body.get("instructions")),
-                Some(&json!(""))
-            );
+            assert!(plan
+                .body
+                .json_body
+                .as_ref()
+                .and_then(|body| body.get("instructions"))
+                .is_none());
             assert_eq!(
                 plan.body
                     .json_body
@@ -3856,7 +3863,7 @@ async fn gateway_handles_openai_responses_test_model_locally_impl() {
                 .json_body
                 .as_ref()
                 .and_then(|body| body.get("prompt_cache_key"))
-                .is_some());
+                .is_none());
             Json(json!({
                 "request_id": plan.request_id,
                 "candidate_id": plan.candidate_id,
@@ -3960,8 +3967,8 @@ async fn gateway_handles_openai_image_test_model_locally_impl() {
             assert_eq!(plan.client_api_format, "openai:image");
             assert_eq!(plan.provider_api_format, "openai:image");
             assert_eq!(plan.model_name.as_deref(), Some("gpt-image-1"));
-            assert_eq!(plan.url, "https://api.openai.example/v1/responses");
-            assert!(plan.stream);
+            assert_eq!(plan.url, "https://api.openai.example/v1/images/generations");
+            assert!(!plan.stream);
             assert_eq!(
                 plan.headers.get("authorization").map(String::as_str),
                 Some("Bearer sk-test-image")
@@ -3971,38 +3978,42 @@ async fn gateway_handles_openai_image_test_model_locally_impl() {
                     .json_body
                     .as_ref()
                     .and_then(|body| body.get("model")),
-                Some(&json!(crate::ai_serving::CODEX_OPENAI_IMAGE_INTERNAL_MODEL))
+                Some(&json!("gpt-image-1"))
             );
             assert_eq!(
                 plan.body
                     .json_body
                     .as_ref()
-                    .and_then(|body| body.get("input"))
-                    .and_then(|input| input.as_array())
-                    .and_then(|items| items.first())
-                    .and_then(|item| item.get("content"))
+                    .and_then(|body| body.get("prompt"))
                     .and_then(|value| value.as_str()),
                 Some("Draw a small blue square")
             );
+            assert!(plan
+                .body
+                .json_body
+                .as_ref()
+                .is_some_and(|body| body.get("stream").is_none()));
             Json(json!({
                 "request_id": plan.request_id,
                 "candidate_id": plan.candidate_id,
                 "status_code": 200,
                 "headers": {
-                    "content-type": "text/event-stream"
+                    "content-type": "application/json"
                 },
                 "body": {
-                    "body_bytes_b64": base64::engine::general_purpose::STANDARD.encode(
-                        concat!(
-                            "event: response.created\n",
-                            "data: {\"type\":\"response.created\",\"response\":{\"created_at\":1776839946}}\n\n",
-                            "event: response.output_item.done\n",
-                            "data: {\"type\":\"response.output_item.done\",\"output_index\":0,\"item\":{\"type\":\"image_generation_call\",\"output_format\":\"png\",\"revised_prompt\":\"revised prompt\",\"result\":\"aGVsbG8=\"}}\n\n",
-                            "event: response.completed\n",
-                            "data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_img_123\",\"model\":\"gpt-image-1\",\"status\":\"completed\",\"tool_usage\":{\"image_gen\":{\"input_tokens\":171,\"output_tokens\":1372,\"total_tokens\":1543}}}}\n\n"
-                        )
-                        .as_bytes()
-                    )
+                    "json_body": {
+                        "created": 1776839946,
+                        "model": "gpt-image-1",
+                        "data": [{
+                            "b64_json": "aGVsbG8=",
+                            "revised_prompt": "revised prompt"
+                        }],
+                        "usage": {
+                            "input_tokens": 171,
+                            "output_tokens": 1372,
+                            "total_tokens": 1543
+                        }
+                    }
                 },
                 "telemetry": {
                     "elapsed_ms": 19

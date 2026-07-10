@@ -100,6 +100,14 @@ impl StreamingStandardFormatMatrix {
                 out.extend(client.emit_unknown_event(payload)?);
                 break;
             }
+            if let CanonicalStreamEvent::OpenAiResponsesOutputItem { raw_event, .. } = &frame.event
+            {
+                if !matches!(client, ClientStreamEmitter::OpenAIResponses(_)) {
+                    self.terminated = true;
+                    out.extend(client.emit_unknown_event(raw_event)?);
+                    break;
+                }
+            }
             out.extend(client.emit(frame)?);
         }
         Ok(out)
@@ -125,6 +133,14 @@ impl StreamingStandardTerminalObserver {
         report_context: &Value,
         line: Vec<u8>,
     ) -> Result<(), AiSurfaceFinalizeError> {
+        if let Some(service_tier) = decode_json_data_line(&line)
+            .as_ref()
+            .and_then(provider_actual_service_tier_from_stream_event)
+        {
+            self.latest_summary
+                .get_or_insert_with(ExecutionStreamTerminalSummary::default)
+                .provider_actual_service_tier = Some(service_tier);
+        }
         self.ensure_initialized(report_context);
         let Some(provider) = self.provider.as_mut() else {
             return Ok(());
@@ -238,6 +254,17 @@ impl StreamingStandardTerminalObserver {
     }
 }
 
+fn provider_actual_service_tier_from_stream_event(event: &Value) -> Option<String> {
+    event
+        .get("response")
+        .and_then(|response| response.get("service_tier"))
+        .or_else(|| event.get("service_tier"))
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty() && value.len() <= 64)
+        .map(str::to_ascii_lowercase)
+}
+
 enum TerminalStreamParser {
     Standard(ProviderStreamParser),
     OpenAIImage(OpenAiImageStreamTerminalState),
@@ -310,7 +337,7 @@ impl ProviderStreamParser {
 
 enum ClientStreamEmitter {
     OpenAIChat(OpenAIChatClientEmitter),
-    OpenAIResponses(OpenAIResponsesClientEmitter),
+    OpenAIResponses(Box<OpenAIResponsesClientEmitter>),
     Claude(ClaudeClientEmitter),
     Gemini(GeminiClientEmitter),
 }
@@ -359,7 +386,7 @@ impl ClientStreamEmitter {
         Some(match FormatId::parse(client_api_format)? {
             FormatId::OpenAiChat => Self::OpenAIChat(OpenAIChatClientEmitter::default()),
             FormatId::OpenAiResponses | FormatId::OpenAiResponsesCompact => {
-                Self::OpenAIResponses(OpenAIResponsesClientEmitter::default())
+                Self::OpenAIResponses(Box::default())
             }
             FormatId::ClaudeMessages => Self::Claude(ClaudeClientEmitter::default()),
             FormatId::GeminiGenerateContent => Self::Gemini(GeminiClientEmitter::default()),
@@ -1094,6 +1121,66 @@ mod tests {
     }
 
     #[test]
+    fn responses_compaction_output_is_lossless_within_family_and_rejected_cross_format() {
+        let compaction_event = json!({
+            "type": "response.output_item.done",
+            "item": {
+                "type": "compaction",
+                "encrypted_content": "ENCRYPTED_CONTEXT_COMPACTION_SUMMARY"
+            }
+        });
+
+        let mut responses_matrix = StreamingStandardFormatMatrix::default();
+        let responses_context = report_context("openai:responses", "openai:responses");
+        let mut responses_output = responses_matrix
+            .transform_line(&responses_context, data_line(compaction_event.clone()))
+            .expect("same-family compaction output should convert");
+        responses_output.extend(
+            responses_matrix
+                .transform_line(
+                    &responses_context,
+                    data_line(json!({
+                        "type": "response.completed",
+                        "response": {
+                            "id": "resp-compact",
+                            "model": "gpt-5.6-sol",
+                            "usage": {
+                                "input_tokens": 0,
+                                "output_tokens": 0,
+                                "total_tokens": 0
+                            }
+                        }
+                    })),
+                )
+                .expect("terminal response should convert"),
+        );
+        let responses_sse = String::from_utf8(responses_output).expect("valid Responses SSE");
+        assert!(responses_sse.contains("event: response.output_item.done\n"));
+        assert!(responses_sse.contains("\"type\":\"compaction\""));
+        assert!(!responses_sse.contains("\"output_index\""));
+        assert!(responses_sse.contains("event: response.completed\n"));
+
+        for client_api_format in ["openai:chat", "claude:messages", "gemini:generate_content"] {
+            let mut matrix = StreamingStandardFormatMatrix::default();
+            let context = report_context("openai:responses", client_api_format);
+            let output = matrix
+                .transform_line(&context, data_line(compaction_event.clone()))
+                .expect("cross-format rejection should be encoded for the client");
+            let sse = String::from_utf8(output).expect("valid error SSE");
+            assert!(
+                sse.contains("Unsupported provider stream event cannot be converted losslessly")
+                    && sse.contains("compaction"),
+                "{client_api_format}: {sse}"
+            );
+            if client_api_format == "gemini:generate_content" {
+                assert!(sse.contains("\"status\":\"INTERNAL\""), "{sse}");
+            } else {
+                assert!(sse.contains("unsupported_stream_event"), "{sse}");
+            }
+        }
+    }
+
+    #[test]
     fn transforms_openai_responses_known_sidecar_events_without_unsupported_errors() {
         let report_context = report_context("openai:responses", "claude:messages");
         let mut matrix = StreamingStandardFormatMatrix::default();
@@ -1793,6 +1880,55 @@ mod tests {
         assert_eq!(summary.finish_reason.as_deref(), Some("length"));
         assert_eq!(summary.parser_error, None);
         assert_eq!(summary.unknown_event_count, 0);
+    }
+
+    #[test]
+    fn terminal_observer_preserves_actual_service_tier_without_response_capture() {
+        let chat_context = report_context("openai:chat", "openai:chat");
+        let mut chat_observer = StreamingStandardTerminalObserver::default();
+        chat_observer
+            .push_line(
+                &chat_context,
+                data_line(json!({
+                    "id": "chatcmpl_tier_1",
+                    "object": "chat.completion.chunk",
+                    "model": "gpt-5.6",
+                    "service_tier": "Default",
+                    "choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}],
+                })),
+            )
+            .expect("Chat terminal tier should be observed");
+        assert_eq!(
+            chat_observer
+                .latest_summary()
+                .and_then(|summary| summary.provider_actual_service_tier.as_deref()),
+            Some("default")
+        );
+
+        let responses_context = report_context("openai:responses", "openai:responses");
+        let mut responses_observer = StreamingStandardTerminalObserver::default();
+        responses_observer
+            .push_line(
+                &responses_context,
+                data_line(json!({
+                    "type": "response.completed",
+                    "response": {
+                        "id": "resp_tier_1",
+                        "model": "gpt-5.6",
+                        "status": "completed",
+                        "service_tier": "Flex",
+                        "output": [],
+                    },
+                    "sequence_number": 1,
+                })),
+            )
+            .expect("Responses terminal tier should be observed");
+        assert_eq!(
+            responses_observer
+                .latest_summary()
+                .and_then(|summary| summary.provider_actual_service_tier.as_deref()),
+            Some("flex")
+        );
     }
 
     #[test]

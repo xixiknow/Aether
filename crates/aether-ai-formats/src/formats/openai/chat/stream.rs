@@ -55,6 +55,7 @@ pub struct OpenAIResponsesProviderState {
     tool_results: BTreeMap<usize, OpenAIResponsesProviderToolResultState>,
     tool_index_by_key: BTreeMap<String, usize>,
     image_item_keys: BTreeSet<String>,
+    opaque_completed_item_keys: BTreeSet<String>,
     last_tool_index: Option<usize>,
 }
 
@@ -655,6 +656,14 @@ impl OpenAIResponsesProviderState {
         if item.get("type").and_then(Value::as_str) != Some("function_call") {
             return;
         }
+        const MAPPED_FIELDS: &[&str] = &["type", "id", "call_id", "status", "name", "arguments"];
+        if item
+            .keys()
+            .any(|field| !MAPPED_FIELDS.contains(&field.as_str()))
+        {
+            out.push(self.unknown_frame(report_context, Value::Object(item.clone())));
+            return;
+        }
         self.ensure_started(report_context, out);
         let key = item
             .get("call_id")
@@ -1048,6 +1057,20 @@ impl OpenAIResponsesProviderState {
         });
     }
 
+    fn output_item_key(item: &Map<String, Value>) -> String {
+        let item_type = item.get("type").and_then(Value::as_str).unwrap_or_default();
+        if let Some(item_id) = item.get("id").and_then(Value::as_str) {
+            return format!("{item_type}:id:{item_id}");
+        }
+        if let Some(encrypted_content) = item.get("encrypted_content").and_then(Value::as_str) {
+            return format!("{item_type}:encrypted_content:{encrypted_content}");
+        }
+        format!(
+            "{item_type}:{}",
+            serde_json::to_string(item).unwrap_or_default()
+        )
+    }
+
     fn emit_output_item(
         &mut self,
         report_context: &Value,
@@ -1055,23 +1078,31 @@ impl OpenAIResponsesProviderState {
         item: &Map<String, Value>,
         output_index: Option<usize>,
         final_item: bool,
-    ) {
+    ) -> bool {
         match item.get("type").and_then(Value::as_str).unwrap_or_default() {
-            "function_call" => self.emit_tool_call_item(report_context, out, item, output_index),
+            "function_call" => {
+                self.emit_tool_call_item(report_context, out, item, output_index);
+                true
+            }
             "function_call_output" => {
                 self.emit_tool_result_item(report_context, out, item, output_index);
+                true
             }
             "custom_tool_call" => {
                 self.emit_custom_tool_call_item(report_context, out, item, output_index);
+                true
             }
             "local_shell_call" | "shell_call" => {
                 self.emit_shell_tool_call_item(report_context, out, item, output_index);
+                true
             }
             "apply_patch_call" => {
                 self.emit_apply_patch_tool_call_item(report_context, out, item, output_index);
+                true
             }
             "computer_call" => {
                 self.emit_computer_tool_call_item(report_context, out, item, output_index);
+                true
             }
             "custom_tool_call_output"
             | "local_shell_call_output"
@@ -1079,10 +1110,20 @@ impl OpenAIResponsesProviderState {
             | "apply_patch_call_output"
             | "computer_call_output" => {
                 self.emit_generic_tool_result_item(report_context, out, item, output_index);
+                true
             }
-            "message" => self.emit_message_item(report_context, out, item, output_index),
-            "reasoning" if final_item => self.emit_reasoning_item(report_context, out, item),
-            "reasoning" => self.ensure_started(report_context, out),
+            "message" => {
+                self.emit_message_item(report_context, out, item, output_index);
+                true
+            }
+            "reasoning" if final_item => {
+                self.emit_reasoning_item(report_context, out, item);
+                true
+            }
+            "reasoning" => {
+                self.ensure_started(report_context, out);
+                true
+            }
             "image_generation_call" => {
                 self.emit_image_generation_item(
                     report_context,
@@ -1091,14 +1132,55 @@ impl OpenAIResponsesProviderState {
                     output_index,
                     final_item,
                 );
+                true
             }
             "web_search_call" | "file_search_call" | "code_interpreter_call" | "mcp_call" => {
                 if !final_item {
                     self.ensure_started(report_context, out);
                 }
+                true
             }
-            _ => out.push(self.unknown_frame(report_context, Value::Object(item.clone()))),
+            _ => false,
         }
+    }
+
+    fn emit_output_item_event(
+        &mut self,
+        report_context: &Value,
+        out: &mut Vec<CanonicalStreamFrame>,
+        raw_event: &Value,
+        item: &Map<String, Value>,
+        output_index: Option<usize>,
+        final_item: bool,
+    ) {
+        if self.emit_output_item(report_context, out, item, output_index, final_item) {
+            return;
+        }
+
+        if item
+            .get("type")
+            .and_then(Value::as_str)
+            .is_none_or(str::is_empty)
+        {
+            out.push(self.unknown_frame(report_context, raw_event.clone()));
+            return;
+        }
+
+        if final_item {
+            self.opaque_completed_item_keys
+                .insert(Self::output_item_key(item));
+        }
+        self.ensure_started(report_context, out);
+        let (id, model) = self.identity(report_context);
+        out.push(CanonicalStreamFrame {
+            id,
+            model,
+            event: CanonicalStreamEvent::OpenAiResponsesOutputItem {
+                output_index,
+                item: Value::Object(item.clone()),
+                raw_event: raw_event.clone(),
+            },
+        });
     }
 
     fn emit_response_output_items(
@@ -1117,7 +1199,13 @@ impl OpenAIResponsesProviderState {
             let Some(item) = raw_item.as_object() else {
                 continue;
             };
-            self.emit_output_item(report_context, out, item, Some(output_index), true);
+            if !self.emit_output_item(report_context, out, item, Some(output_index), true)
+                && !self
+                    .opaque_completed_item_keys
+                    .contains(&Self::output_item_key(item))
+            {
+                out.push(self.unknown_frame(report_context, Value::Object(item.clone())));
+            }
         }
     }
 
@@ -1326,7 +1414,14 @@ impl OpenAIResponsesProviderState {
                     .get("output_index")
                     .and_then(Value::as_u64)
                     .map(|value| value as usize);
-                self.emit_output_item(report_context, &mut out, item, output_index, false);
+                self.emit_output_item_event(
+                    report_context,
+                    &mut out,
+                    &value,
+                    item,
+                    output_index,
+                    false,
+                );
             }
             "response.custom_tool_call_input.delta" => {
                 let delta = value
@@ -1578,7 +1673,14 @@ impl OpenAIResponsesProviderState {
                     .get("output_index")
                     .and_then(Value::as_u64)
                     .map(|value| value as usize);
-                self.emit_output_item(report_context, &mut out, item, output_index, true);
+                self.emit_output_item_event(
+                    report_context,
+                    &mut out,
+                    &value,
+                    item,
+                    output_index,
+                    true,
+                );
             }
             "response.incomplete" => {
                 let Some(response) = value.get("response").and_then(Value::as_object) else {
@@ -1744,6 +1846,8 @@ pub struct OpenAIResponsesClientEmitter {
     tool_calls: BTreeMap<usize, OpenAIResponsesClientToolState>,
     tool_results: BTreeMap<usize, OpenAIResponsesClientToolResultState>,
     image_generation_items: BTreeMap<usize, Value>,
+    opaque_output_items: BTreeMap<usize, Value>,
+    opaque_output_indexes: BTreeMap<String, usize>,
 }
 
 impl OpenAIChatClientEmitter {
@@ -1880,6 +1984,11 @@ impl OpenAIChatClientEmitter {
                     ),
                 )?);
                 Ok(out)
+            }
+            CanonicalStreamEvent::OpenAiResponsesOutputItem { .. } => {
+                Err(AiSurfaceFinalizeError::new(
+                    "OpenAI Responses output items cannot be converted losslessly to OpenAI Chat",
+                ))
             }
             CanonicalStreamEvent::ToolCallStart {
                 index,
@@ -2682,6 +2791,9 @@ impl OpenAIResponsesClientEmitter {
         for (output_index, item) in &self.image_generation_items {
             ordered_output.push((*output_index, item.clone()));
         }
+        for (output_index, item) in &self.opaque_output_items {
+            ordered_output.push((*output_index, item.clone()));
+        }
         ordered_output.sort_by_key(|(output_index, _)| *output_index);
 
         let mut response = json!({
@@ -2713,6 +2825,61 @@ impl OpenAIResponsesClientEmitter {
 
     fn incomplete_response(&self, usage: CanonicalUsage, reason: &str) -> Value {
         self.terminal_response(usage, "incomplete", Some(reason))
+    }
+
+    pub(crate) fn finish_with_authoritative_response_event(
+        &mut self,
+        response: Value,
+        event_type: &'static str,
+    ) -> Result<Vec<u8>, AiSurfaceFinalizeError> {
+        if self.finished {
+            return Ok(Vec::new());
+        }
+        if !matches!(
+            event_type,
+            "response.completed" | "response.incomplete" | "response.failed"
+        ) {
+            return Err(AiSurfaceFinalizeError::new(format!(
+                "unsupported authoritative OpenAI Responses terminal event: {event_type}"
+            )));
+        }
+        let response_object = response.as_object().ok_or_else(|| {
+            AiSurfaceFinalizeError::new(
+                "authoritative OpenAI Responses terminal payload must be an object",
+            )
+        })?;
+        if let Some(response_id) = response_object
+            .get("id")
+            .and_then(Value::as_str)
+            .filter(|value| !value.is_empty())
+        {
+            self.response_id = Some(response_id.to_string());
+        }
+        if let Some(model) = response_object
+            .get("model")
+            .and_then(Value::as_str)
+            .filter(|value| !value.is_empty())
+        {
+            self.model = Some(model.to_string());
+        }
+        if let Some(created_at) = response_object.get("created_at").and_then(Value::as_i64) {
+            self.created_at = Some(created_at);
+        }
+
+        let mut out = self.ensure_started()?;
+        out.extend(self.finish_reasoning_item()?);
+        out.extend(self.finish_text_item()?);
+        out.extend(self.finish_tool_items()?);
+        out.extend(self.finish_tool_result_items()?);
+        out.extend(self.encode_response_event(
+            event_type,
+            json!({
+                "type": event_type,
+                "response": response,
+            }),
+        )?);
+        self.finished = true;
+        Ok(out)
     }
 
     pub fn emit(&mut self, frame: CanonicalStreamFrame) -> Result<Vec<u8>, AiSurfaceFinalizeError> {
@@ -2813,6 +2980,50 @@ impl OpenAIResponsesClientEmitter {
             }
             CanonicalStreamEvent::ImageGenerationCall { index, item } => {
                 self.emit_image_generation_call_item(index, item)
+            }
+            CanonicalStreamEvent::OpenAiResponsesOutputItem {
+                output_index,
+                item,
+                raw_event,
+            } => {
+                let event_type = raw_event
+                    .get("type")
+                    .and_then(Value::as_str)
+                    .filter(|value| {
+                        matches!(
+                            *value,
+                            "response.output_item.added" | "response.output_item.done"
+                        )
+                    })
+                    .ok_or_else(|| {
+                        AiSurfaceFinalizeError::new(
+                            "OpenAI Responses output item event must be added or done",
+                        )
+                    })?
+                    .to_string();
+                let item_key = item
+                    .as_object()
+                    .map(OpenAIResponsesProviderState::output_item_key)
+                    .unwrap_or_else(|| item.to_string());
+                let materialized_output_index = if let Some(output_index) = output_index {
+                    self.next_output_index =
+                        self.next_output_index.max(output_index.saturating_add(1));
+                    self.opaque_output_indexes.insert(item_key, output_index);
+                    output_index
+                } else if let Some(output_index) = self.opaque_output_indexes.get(&item_key) {
+                    *output_index
+                } else {
+                    let output_index = self.allocate_output_index();
+                    self.opaque_output_indexes.insert(item_key, output_index);
+                    output_index
+                };
+                let mut out = self.ensure_started()?;
+                if event_type == "response.output_item.done" {
+                    self.opaque_output_items
+                        .insert(materialized_output_index, item);
+                }
+                out.extend(encode_json_sse(Some(event_type.as_str()), &raw_event)?);
+                Ok(out)
             }
             CanonicalStreamEvent::ToolCallStart {
                 index,
@@ -3363,6 +3574,93 @@ mod tests {
     }
 
     #[test]
+    fn openai_responses_provider_state_recognizes_compaction_output_without_index() {
+        let mut state = OpenAIResponsesProviderState::default();
+        let report_context = json!({});
+        let raw_event = json!({
+            "type": "response.output_item.done",
+            "item": {
+                "type": "compaction",
+                "encrypted_content": "ENCRYPTED_CONTEXT_COMPACTION_SUMMARY"
+            }
+        });
+        let frames = state
+            .push_line(&report_context, data_line(raw_event.clone()))
+            .expect("compaction output item should parse");
+
+        assert!(frames.iter().any(|frame| matches!(
+            &frame.event,
+            CanonicalStreamEvent::OpenAiResponsesOutputItem {
+                output_index: None,
+                item,
+                raw_event: emitted_event,
+            } if item["type"] == "compaction" && emitted_event == &raw_event
+        )));
+        assert!(!frames
+            .iter()
+            .any(|frame| matches!(frame.event, CanonicalStreamEvent::UnknownEvent(_))));
+
+        let terminal = state
+            .push_line(
+                &report_context,
+                data_line(json!({
+                    "type": "response.completed",
+                    "response": {
+                        "id": "resp-compact",
+                        "usage": {
+                            "input_tokens": 0,
+                            "output_tokens": 0,
+                            "total_tokens": 0
+                        }
+                    }
+                })),
+            )
+            .expect("completed response should parse");
+        assert!(terminal
+            .iter()
+            .any(|frame| matches!(frame.event, CanonicalStreamEvent::Finish { .. })));
+        assert!(!terminal
+            .iter()
+            .any(|frame| matches!(frame.event, CanonicalStreamEvent::UnknownEvent(_))));
+    }
+
+    #[test]
+    fn openai_responses_provider_state_rejects_function_call_provenance() {
+        let mut state = OpenAIResponsesProviderState::default();
+        let report_context = json!({});
+        let frames = state
+            .push_line(
+                &report_context,
+                data_line(json!({
+                    "type": "response.output_item.added",
+                    "response_id": "resp_ptc_123",
+                    "output_index": 0,
+                    "item": {
+                        "type": "function_call",
+                        "id": "fc_123",
+                        "call_id": "call_123",
+                        "status": "completed",
+                        "name": "lookup",
+                        "arguments": "{}",
+                        "caller": {"type": "program", "id": "program_123"}
+                    }
+                })),
+            )
+            .expect("function call event should parse");
+
+        assert!(frames.iter().any(|frame| matches!(
+            frame.event,
+            CanonicalStreamEvent::UnknownEvent(ref payload)
+                if payload.get("caller").is_some()
+        )));
+        assert!(!frames.iter().any(|frame| matches!(
+            frame.event,
+            CanonicalStreamEvent::ToolCallStart { .. }
+                | CanonicalStreamEvent::ToolCallArgumentsDelta { .. }
+        )));
+    }
+
+    #[test]
     fn openai_responses_provider_state_treats_failed_event_as_terminal() {
         let mut state = OpenAIResponsesProviderState::default();
         let report_context = json!({});
@@ -3489,6 +3787,7 @@ mod tests {
                             "input_tokens": 26,
                             "input_tokens_details": {
                                 "cached_tokens": 0,
+                                "cache_write_tokens": 6,
                             },
                             "output_tokens": 137,
                             "output_tokens_details": {
@@ -3508,6 +3807,7 @@ mod tests {
                 usage: Some(CanonicalUsage {
                     input_tokens: 26,
                     output_tokens: 137,
+                    cache_creation_tokens: 6,
                     cache_read_tokens: 0,
                     ..
                 }),
@@ -4560,6 +4860,7 @@ mod tests {
         assert!(sse.contains("\"completion_tokens\":2"));
         assert!(sse.contains("\"completion_tokens_details\":{\"reasoning_tokens\":1}"));
         assert!(sse.contains("\"cache_write_tokens\":5"));
+        assert!(!sse.contains("\"cached_creation_tokens\""));
         assert!(sse.contains("\"cached_tokens\":4"));
         assert!(sse.contains("\"total_tokens\":3"));
         assert!(sse.contains("data: [DONE]\n\n"));
@@ -4684,6 +4985,7 @@ mod tests {
         assert!(sse.contains("\"output_tokens_details\":{\"reasoning_tokens\":1}"));
         assert!(sse.contains("\"input_tokens_details\""));
         assert!(sse.contains("\"cache_write_tokens\":5"));
+        assert!(!sse.contains("\"cached_creation_tokens\""));
         assert!(sse.contains("\"cached_tokens\":4"));
     }
 

@@ -270,6 +270,8 @@ export interface UpstreamModel {
   id: string
   owned_by?: string
   display_name?: string
+  visibility?: string
+  supported_in_api?: boolean
   api_formats: string[]  // 该模型支持的所有 API 格式（后端保证返回数组）
   model_test_capabilities?: ModelTestCapabilities | null
 }
