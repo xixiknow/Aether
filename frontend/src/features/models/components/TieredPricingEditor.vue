@@ -44,21 +44,32 @@
             class="font-medium"
           >无上限</span>
         </div>
-        <Button
-          v-if="localTiers.length > 1"
-          variant="ghost"
-          size="sm"
-          class="h-7 w-7 p-0"
-          @click="removeTier(index)"
-        >
-          <X class="w-4 h-4 text-muted-foreground hover:text-destructive" />
-        </Button>
+        <div class="flex items-center gap-1">
+          <Button
+            type="button"
+            variant="ghost"
+            size="sm"
+            class="h-7 px-2 text-xs text-muted-foreground"
+            @click="toggleCachePriceMode(index)"
+          >
+            <Repeat2 class="w-3.5 h-3.5 mr-1" />
+            {{ getCachePriceMode(index) === 'multiplier' ? '具体价格' : '输入倍率' }}
+          </Button>
+          <Button
+            v-if="localTiers.length > 1"
+            variant="ghost"
+            size="sm"
+            class="h-7 w-7 p-0"
+            @click="removeTier(index)"
+          >
+            <X class="w-4 h-4 text-muted-foreground hover:text-destructive" />
+          </Button>
+        </div>
       </div>
 
       <!-- 价格输入 -->
       <div
-        class="grid gap-3"
-        :class="[showCache1h ? 'grid-cols-5' : 'grid-cols-4']"
+        class="grid grid-cols-4 gap-3"
       >
         <div class="space-y-1">
           <Label class="text-xs">输入 ($/M)</Label>
@@ -85,43 +96,46 @@
           />
         </div>
         <div class="space-y-1">
-          <Label class="text-xs text-muted-foreground">缓存创建</Label>
-          <Input
-            :model-value="getCacheCreationDisplay(index)"
-            type="number"
-            step="0.01"
-            min="0"
-            class="h-8"
-            :placeholder="getCacheCreationPlaceholder(index)"
-            @update:model-value="(v) => updateCacheCreation(index, v)"
-          />
+          <Label class="text-xs text-muted-foreground">
+            {{ getCachePriceMode(index) === 'multiplier' ? '缓存创建（输入倍率）' : '缓存创建 ($/M)' }}
+          </Label>
+          <div class="relative">
+            <Input
+              :model-value="getCacheCreationEditorValue(index)"
+              type="number"
+              step="0.01"
+              min="0"
+              class="h-8"
+              :class="getCachePriceMode(index) === 'multiplier' ? 'pr-7' : ''"
+              placeholder="0"
+              @update:model-value="(v) => updateCacheCreation(index, v)"
+            />
+            <span
+              v-if="getCachePriceMode(index) === 'multiplier'"
+              class="absolute right-2 top-1/2 -translate-y-1/2 text-xs text-muted-foreground"
+            >×</span>
+          </div>
         </div>
         <div class="space-y-1">
-          <Label class="text-xs text-muted-foreground">缓存读取</Label>
-          <Input
-            :model-value="getCacheReadDisplay(index)"
-            type="number"
-            step="0.01"
-            min="0"
-            class="h-8"
-            :placeholder="getCacheReadPlaceholder(index)"
-            @update:model-value="(v) => updateCacheRead(index, v)"
-          />
-        </div>
-        <div
-          v-if="showCache1h"
-          class="space-y-1"
-        >
-          <Label class="text-xs text-muted-foreground">1h 缓存</Label>
-          <Input
-            :model-value="getCache1hDisplay(index)"
-            type="number"
-            step="0.01"
-            min="0"
-            class="h-8"
-            :placeholder="getCache1hPlaceholder(index)"
-            @update:model-value="(v) => updateCache1h(index, v)"
-          />
+          <Label class="text-xs text-muted-foreground">
+            {{ getCachePriceMode(index) === 'multiplier' ? '缓存读取（输入倍率）' : '缓存读取 ($/M)' }}
+          </Label>
+          <div class="relative">
+            <Input
+              :model-value="getCacheReadEditorValue(index)"
+              type="number"
+              step="0.01"
+              min="0"
+              class="h-8"
+              :class="getCachePriceMode(index) === 'multiplier' ? 'pr-7' : ''"
+              placeholder="0"
+              @update:model-value="(v) => updateCacheRead(index, v)"
+            />
+            <span
+              v-if="getCachePriceMode(index) === 'multiplier'"
+              class="absolute right-2 top-1/2 -translate-y-1/2 text-xs text-muted-foreground"
+            >×</span>
+          </div>
         </div>
       </div>
     </div>
@@ -284,10 +298,14 @@
 
 <script setup lang="ts">
 import { ref, computed, watch, reactive } from 'vue'
-import { Plus, X } from 'lucide-vue-next'
+import { Plus, Repeat2, X } from 'lucide-vue-next'
 import { Button, Input, Label } from '@/components/ui'
 import { formatTokens } from '@/utils/format'
 import type { TieredPricingConfig, PricingTier, ImageOutputPriceRange } from '@/api/endpoints/types'
+import {
+  cacheMultiplierFromPrice,
+  cachePriceFromInputMultiplier,
+} from '@/features/models/utils/tiered-pricing-multipliers'
 
 type ImageOutputQuality = 'low' | 'medium' | 'high'
 type ImageOutputPriceRow = {
@@ -300,10 +318,14 @@ type ImageOutputPriceRangeRow = {
   upToPixels: string
   prices: Partial<Record<ImageOutputQuality, number>>
 }
+type CachePriceMode = 'multiplier' | 'price'
+type CacheMultiplierDraft = {
+  creation: string
+  read: string
+}
 
 const props = defineProps<{
   modelValue?: TieredPricingConfig | null
-  showCache1h?: boolean
   showImagePricing?: boolean
 }>()
 const emit = defineEmits<{
@@ -322,8 +344,8 @@ const lastEmittedPricingJson = ref<string>('')
 let imageOutputPriceRowId = 0
 let imageOutputPriceRangeRowId = 0
 
-// 跟踪每个阶梯的缓存价格是否被手动设置
-const cacheManuallySet = reactive<Record<number, { creation: boolean; read: boolean; cache1h: boolean }>>({})
+const cachePriceModes = reactive<Record<number, CachePriceMode>>({})
+const cacheMultiplierDrafts = reactive<Record<number, CacheMultiplierDraft>>({})
 
 // 预设的阶梯上限选项
 const THRESHOLD_OPTIONS = [
@@ -346,6 +368,10 @@ watch(
     if (lastEmittedPricingJson.value && JSON.stringify(newValue ?? null) === lastEmittedPricingJson.value) {
       return
     }
+    clearIndexedRecord(cachePriceModes)
+    clearIndexedRecord(cacheMultiplierDrafts)
+    clearIndexedRecord(customInputMode)
+    clearIndexedRecord(customInputValue)
     if (newValue?.tiers) {
       localTiers.value = newValue.tiers.map(t => ({ ...t }))
       imageOutputPriceRows.value = createImageOutputPriceRows(newValue.image_output_prices)
@@ -353,14 +379,9 @@ watch(
       imageOutputPriceDefault.value = newValue.image_output_price_default != null
         ? String(newValue.image_output_price_default)
         : ''
-      // 如果已有缓存价格，标记为手动设置
       newValue.tiers.forEach((t, i) => {
-        const has1hCache = t.cache_ttl_pricing?.some(c => c.ttl_minutes === 60) ?? false
-        cacheManuallySet[i] = {
-          creation: t.cache_creation_price_per_1m != null,
-          read: t.cache_read_price_per_1m != null,
-          cache1h: has1hCache,
-        }
+        cachePriceModes[i] = 'multiplier'
+        cacheMultiplierDrafts[i] = createCacheMultiplierDraft(t)
       })
     } else {
       localTiers.value = [{
@@ -371,7 +392,8 @@ watch(
       imageOutputPriceRows.value = createImageOutputPriceRows(null)
       imageOutputPriceRangeRows.value = createImageOutputPriceRangeRows(null)
       imageOutputPriceDefault.value = ''
-      cacheManuallySet[0] = { creation: false, read: false, cache1h: false }
+      cachePriceModes[0] = 'multiplier'
+      cacheMultiplierDrafts[0] = createCacheMultiplierDraft(localTiers.value[0])
     }
   },
   { immediate: true }
@@ -433,135 +455,101 @@ function getAvailableThresholds(index: number) {
   return options
 }
 
-// 缓存价格自动计算
-function getAutoCacheCreation(index: number): number {
-  const inputPrice = localTiers.value[index]?.input_price_per_1m || 0
-  return parseFloat((inputPrice * 1.25).toFixed(4))
+function clearIndexedRecord<T>(record: Record<number, T>) {
+  Object.keys(record).forEach(key => delete record[Number(key)])
 }
 
-function getAutoCacheRead(index: number): number {
-  const inputPrice = localTiers.value[index]?.input_price_per_1m || 0
-  return parseFloat((inputPrice * 0.1).toFixed(4))
-}
-
-function getAutoCache1h(index: number): number {
-  const inputPrice = localTiers.value[index]?.input_price_per_1m || 0
-  return parseFloat((inputPrice * 2).toFixed(4))
-}
-
-function getCacheCreationPlaceholder(index: number): string {
-  const auto = getAutoCacheCreation(index)
-  return auto > 0 ? String(auto) : '自动'
-}
-
-function getCacheReadPlaceholder(index: number): string {
-  const auto = getAutoCacheRead(index)
-  return auto > 0 ? String(auto) : '自动'
-}
-
-function getCache1hPlaceholder(index: number): string {
-  const auto = getAutoCache1h(index)
-  return auto > 0 ? String(auto) : '自动'
-}
-
-function getCacheCreationDisplay(index: number): string | number {
-  const tier = localTiers.value[index]
-  if (cacheManuallySet[index]?.creation && tier?.cache_creation_price_per_1m != null) {
-    // 修复浮点数精度问题
-    return parseFloat(tier.cache_creation_price_per_1m.toFixed(4))
+function createCacheMultiplierDraft(tier: PricingTier): CacheMultiplierDraft {
+  return {
+    creation: String(cacheMultiplierFromPrice(tier.input_price_per_1m, tier.cache_creation_price_per_1m, 1.25)),
+    read: String(cacheMultiplierFromPrice(tier.input_price_per_1m, tier.cache_read_price_per_1m, 0.1)),
   }
-  return ''
 }
 
-function getCacheReadDisplay(index: number): string | number {
-  const tier = localTiers.value[index]
-  if (cacheManuallySet[index]?.read && tier?.cache_read_price_per_1m != null) {
-    // 修复浮点数精度问题
-    return parseFloat(tier.cache_read_price_per_1m.toFixed(4))
+function getCachePriceMode(index: number): CachePriceMode {
+  return cachePriceModes[index] || 'multiplier'
+}
+
+function getCacheMultiplierDraft(index: number): CacheMultiplierDraft {
+  if (!cacheMultiplierDrafts[index]) {
+    cacheMultiplierDrafts[index] = createCacheMultiplierDraft(localTiers.value[index])
   }
-  return ''
+  return cacheMultiplierDrafts[index]
 }
 
-function getCache1hDisplay(index: number): string | number {
+function toggleCachePriceMode(index: number) {
   const tier = localTiers.value[index]
-  // 只有手动设置过才显示值
-  if (cacheManuallySet[index]?.cache1h) {
-    const ttl1h = tier?.cache_ttl_pricing?.find(t => t.ttl_minutes === 60)
-    if (ttl1h) {
-      // 修复浮点数精度问题
-      return parseFloat(ttl1h.cache_creation_price_per_1m.toFixed(4))
-    }
+  if (!tier) return
+  if (getCachePriceMode(index) === 'multiplier') {
+    tier.cache_creation_price_per_1m = getResolvedCacheCreationPrice(index)
+    tier.cache_read_price_per_1m = getResolvedCacheReadPrice(index)
+    cachePriceModes[index] = 'price'
+  } else {
+    cacheMultiplierDrafts[index] = createCacheMultiplierDraft(tier)
+    cachePriceModes[index] = 'multiplier'
   }
-  return ''
+  syncToParent()
 }
 
-// 同步到父组件（只同步用户实际输入的值，不自动填充）
+function getResolvedCacheCreationPrice(index: number): number {
+  const tier = localTiers.value[index]
+  if (!tier) return 0
+  if (getCachePriceMode(index) === 'price') {
+    return tier.cache_creation_price_per_1m ?? 0
+  }
+  return cachePriceFromInputMultiplier(
+    tier.input_price_per_1m,
+    parseFloatInput(getCacheMultiplierDraft(index).creation),
+  )
+}
+
+function getResolvedCacheReadPrice(index: number): number {
+  const tier = localTiers.value[index]
+  if (!tier) return 0
+  if (getCachePriceMode(index) === 'price') {
+    return tier.cache_read_price_per_1m ?? 0
+  }
+  return cachePriceFromInputMultiplier(
+    tier.input_price_per_1m,
+    parseFloatInput(getCacheMultiplierDraft(index).read),
+  )
+}
+
+function getCacheCreationEditorValue(index: number): string | number {
+  if (getCachePriceMode(index) === 'multiplier') {
+    return getCacheMultiplierDraft(index).creation
+  }
+  const tier = localTiers.value[index]
+  return tier?.cache_creation_price_per_1m ?? ''
+}
+
+function getCacheReadEditorValue(index: number): string | number {
+  if (getCachePriceMode(index) === 'multiplier') {
+    return getCacheMultiplierDraft(index).read
+  }
+  const tier = localTiers.value[index]
+  return tier?.cache_read_price_per_1m ?? ''
+}
+
 function syncToParent() {
   if (validationError.value) return
 
-  const tiers: PricingTier[] = localTiers.value.map((t, i) => {
-    const tier: PricingTier = {
-      up_to: t.up_to,
-      input_price_per_1m: t.input_price_per_1m,
-      output_price_per_1m: t.output_price_per_1m,
-    }
-
-    // 缓存创建价格：只有手动设置才同步
-    if (cacheManuallySet[i]?.creation && t.cache_creation_price_per_1m != null) {
-      tier.cache_creation_price_per_1m = t.cache_creation_price_per_1m
-    }
-
-    // 缓存读取价格：只有手动设置才同步
-    if (cacheManuallySet[i]?.read && t.cache_read_price_per_1m != null) {
-      tier.cache_read_price_per_1m = t.cache_read_price_per_1m
-    }
-
-    // 缓存 TTL 价格（1h 缓存）- 只有启用 1h 缓存能力且手动设置时才处理
-    if (props.showCache1h && cacheManuallySet[i]?.cache1h && t.cache_ttl_pricing?.length) {
-      tier.cache_ttl_pricing = t.cache_ttl_pricing
-    }
-
-    return tier
-  })
+  const tiers = getFinalTiers()
 
   const value = buildPricingConfig(tiers)
   lastEmittedPricingJson.value = JSON.stringify(value ?? null)
   emit('update:modelValue', value)
 }
 
-// 获取最终提交的数据（包含自动计算的缓存价格）
 function getFinalTiers(): PricingTier[] {
   return localTiers.value.map((t, i) => {
-    const tier: PricingTier = {
+    return {
       up_to: t.up_to,
       input_price_per_1m: t.input_price_per_1m,
       output_price_per_1m: t.output_price_per_1m,
+      cache_creation_price_per_1m: getResolvedCacheCreationPrice(i),
+      cache_read_price_per_1m: getResolvedCacheReadPrice(i),
     }
-
-    // 缓存创建价格：手动设置则用设置值，否则自动计算
-    if (cacheManuallySet[i]?.creation && t.cache_creation_price_per_1m != null) {
-      tier.cache_creation_price_per_1m = t.cache_creation_price_per_1m
-    } else {
-      tier.cache_creation_price_per_1m = getAutoCacheCreation(i)
-    }
-
-    // 缓存读取价格：手动设置则用设置值，否则自动计算
-    if (cacheManuallySet[i]?.read && t.cache_read_price_per_1m != null) {
-      tier.cache_read_price_per_1m = t.cache_read_price_per_1m
-    } else {
-      tier.cache_read_price_per_1m = getAutoCacheRead(i)
-    }
-
-    // 缓存 TTL 价格（1h 缓存）- 只有启用 1h 缓存能力时才处理
-    if (props.showCache1h) {
-      if (cacheManuallySet[i]?.cache1h && t.cache_ttl_pricing?.length) {
-        tier.cache_ttl_pricing = t.cache_ttl_pricing
-      } else {
-        tier.cache_ttl_pricing = [{ ttl_minutes: 60, cache_creation_price_per_1m: getAutoCache1h(i) }]
-      }
-    }
-
-    return tier
   })
 }
 
@@ -844,41 +832,23 @@ function confirmCustomInput(index: number) {
 }
 
 function updateCacheCreation(index: number, value: string | number) {
-  if (value === '' || value === null || value === undefined) {
-    // 清空时恢复自动计算
-    cacheManuallySet[index] = { ...cacheManuallySet[index], creation: false }
-    localTiers.value[index].cache_creation_price_per_1m = undefined
+  if (getCachePriceMode(index) === 'multiplier') {
+    getCacheMultiplierDraft(index).creation = String(value ?? '')
   } else {
-    const numValue = parseFloatInput(value)
-    cacheManuallySet[index] = { ...cacheManuallySet[index], creation: true }
-    localTiers.value[index].cache_creation_price_per_1m = numValue
+    localTiers.value[index].cache_creation_price_per_1m = value === ''
+      ? undefined
+      : parseFloatInput(value)
   }
   syncToParent()
 }
 
 function updateCacheRead(index: number, value: string | number) {
-  if (value === '' || value === null || value === undefined) {
-    // 清空时恢复自动计算
-    cacheManuallySet[index] = { ...cacheManuallySet[index], read: false }
-    localTiers.value[index].cache_read_price_per_1m = undefined
+  if (getCachePriceMode(index) === 'multiplier') {
+    getCacheMultiplierDraft(index).read = String(value ?? '')
   } else {
-    const numValue = parseFloatInput(value)
-    cacheManuallySet[index] = { ...cacheManuallySet[index], read: true }
-    localTiers.value[index].cache_read_price_per_1m = numValue
-  }
-  syncToParent()
-}
-
-function updateCache1h(index: number, value: string | number) {
-  const tier = localTiers.value[index]
-  if (value === '' || value === null || value === undefined) {
-    // 清空时恢复自动计算
-    cacheManuallySet[index] = { ...cacheManuallySet[index], cache1h: false }
-    tier.cache_ttl_pricing = undefined
-  } else {
-    const numValue = parseFloatInput(value)
-    cacheManuallySet[index] = { ...cacheManuallySet[index], cache1h: true }
-    tier.cache_ttl_pricing = [{ ttl_minutes: 60, cache_creation_price_per_1m: numValue }]
+    localTiers.value[index].cache_read_price_per_1m = value === ''
+      ? undefined
+      : parseFloatInput(value)
   }
   syncToParent()
 }
@@ -886,12 +856,14 @@ function updateCache1h(index: number, value: string | number) {
 // 阶梯操作
 function addTier() {
   if (localTiers.value.length === 0) {
-    localTiers.value = [{
+    const tier: PricingTier = {
       up_to: null,
       input_price_per_1m: 0,
       output_price_per_1m: 0,
-    }]
-    cacheManuallySet[0] = { creation: false, read: false, cache1h: false }
+    }
+    localTiers.value = [tier]
+    cachePriceModes[0] = 'multiplier'
+    cacheMultiplierDrafts[0] = createCacheMultiplierDraft(tier)
   } else {
     // 把当前最后一个阶梯（无上限）改为有上限
     const lastTier = localTiers.value[localTiers.value.length - 1]
@@ -912,7 +884,8 @@ function addTier() {
     }
 
     localTiers.value.push(newTier)
-    cacheManuallySet[newIndex] = { creation: false, read: false, cache1h: false }
+    cachePriceModes[newIndex] = 'multiplier'
+    cacheMultiplierDrafts[newIndex] = createCacheMultiplierDraft(newTier)
   }
 
   syncToParent()
@@ -920,20 +893,27 @@ function addTier() {
 
 function removeTier(index: number) {
   if (localTiers.value.length <= 1) return
+  const cacheModes = localTiers.value.map((_, i) => getCachePriceMode(i))
+  const cacheDrafts = localTiers.value.map((tier, i) => (
+    cacheMultiplierDrafts[i] || createCacheMultiplierDraft(tier)
+  ))
+  const customModes = localTiers.value.map((_, i) => customInputMode[i] || false)
+  const customValues = localTiers.value.map((_, i) => customInputValue[i] || '')
+  cacheModes.splice(index, 1)
+  cacheDrafts.splice(index, 1)
+  customModes.splice(index, 1)
+  customValues.splice(index, 1)
   localTiers.value.splice(index, 1)
-  delete cacheManuallySet[index]
-
-  // 重新整理 cacheManuallySet 的索引
-  const newManuallySet: Record<
-    number,
-    { creation: boolean; read: boolean; cache1h: boolean }
-  > = {}
+  clearIndexedRecord(cachePriceModes)
+  clearIndexedRecord(cacheMultiplierDrafts)
+  clearIndexedRecord(customInputMode)
+  clearIndexedRecord(customInputValue)
   localTiers.value.forEach((_, i) => {
-    newManuallySet[i] =
-      cacheManuallySet[i] || { creation: false, read: false, cache1h: false }
+    cachePriceModes[i] = cacheModes[i]
+    cacheMultiplierDrafts[i] = cacheDrafts[i]
+    customInputMode[i] = customModes[i]
+    customInputValue[i] = customValues[i]
   })
-  Object.keys(cacheManuallySet).forEach(k => delete cacheManuallySet[Number(k)])
-  Object.assign(cacheManuallySet, newManuallySet)
 
   if (localTiers.value.length > 0) {
     localTiers.value[localTiers.value.length - 1].up_to = null

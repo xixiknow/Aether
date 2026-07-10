@@ -229,7 +229,6 @@
             <TieredPricingEditor
               ref="tieredPricingEditorRef"
               v-model="tieredPricing"
-              :show-cache1h="true"
               :show-image-pricing="isImageGenerationEnabled"
             />
             <div class="flex items-center gap-3 pt-2 border-t">
@@ -903,15 +902,6 @@ async function handleSubmit() {
 
   // Auto-infer supported_capabilities from tiered pricing config
   const caps = new Set(form.value.supported_capabilities || [])
-  const has1hPricing = finalTieredPricing?.tiers?.some(
-    (t: Record<string, unknown>) => Array.isArray(t.cache_ttl_pricing)
-      && (t.cache_ttl_pricing as Array<Record<string, unknown>>).some(c => c.ttl_minutes === 60)
-  )
-  if (has1hPricing) {
-    caps.add('cache_1h')
-  } else {
-    caps.delete('cache_1h')
-  }
   if (tieredPricingHasImageOutputPricing(finalTieredPricing)) {
     caps.add('image_generation')
   }
