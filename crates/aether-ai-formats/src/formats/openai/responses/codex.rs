@@ -1153,9 +1153,9 @@ fn ensure_codex_reasoning_defaults(
             reasoning_object.insert("effort".to_string(), json!(default_effort));
         }
     }
-    if !capabilities.supports_reasoning_summary_parameter {
-        reasoning_object.remove("summary");
-    } else if reasoning_object.get("summary").is_some_and(Value::is_null) {
+    if !capabilities.supports_reasoning_summary_parameter
+        || reasoning_object.get("summary").is_some_and(Value::is_null)
+    {
         reasoning_object.remove("summary");
     } else if !reasoning_object.contains_key("summary") {
         if let Some(summary) = capabilities.default_reasoning_summary.as_deref() {
