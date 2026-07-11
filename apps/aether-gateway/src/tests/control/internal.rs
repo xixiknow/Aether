@@ -1,6 +1,7 @@
 use std::io;
 use std::sync::{Arc, Mutex};
 
+use aether_contracts::tunnel::RequestMeta;
 use aether_data::repository::proxy_nodes::ProxyNodeReadRepository;
 use axum::body::Body;
 use axum::routing::{any, post};
@@ -17,6 +18,37 @@ use super::{
     build_router_with_state, sample_proxy_node, start_server, AppState, GatewayDataState,
     InMemoryProxyNodeRepository, TRACE_ID_HEADER,
 };
+
+fn relay_request_meta(
+    stream: bool,
+    request_timeout_ms: Option<u64>,
+    stream_first_byte_timeout_ms: Option<u64>,
+) -> RequestMeta {
+    RequestMeta {
+        provider_id: Some("provider-1".to_string()),
+        endpoint_id: Some("endpoint-1".to_string()),
+        key_id: Some("key-1".to_string()),
+        method: "POST".to_string(),
+        url: "https://example.com/responses".to_string(),
+        headers: HashMap::new(),
+        stream,
+        request_timeout_ms,
+        stream_first_byte_timeout_ms,
+        timeout: 60,
+        follow_redirects: None,
+        http1_only: false,
+        transport_profile: None,
+    }
+}
+
+fn relay_envelope(meta: &RequestMeta, body: &[u8]) -> Vec<u8> {
+    let encoded_meta = serde_json::to_vec(meta).expect("metadata should encode");
+    let mut envelope = Vec::with_capacity(4 + encoded_meta.len() + body.len());
+    envelope.extend_from_slice(&(encoded_meta.len() as u32).to_be_bytes());
+    envelope.extend_from_slice(&encoded_meta);
+    envelope.extend_from_slice(body);
+    envelope
+}
 
 #[tokio::test]
 async fn gateway_handles_internal_tunnel_heartbeat_locally_with_loopback() {
@@ -294,10 +326,13 @@ async fn gateway_forwards_tunnel_relay_to_attachment_owner() {
     );
     let (gateway_url, gateway_handle) = start_server(gateway).await;
 
+    let envelope = relay_envelope(&relay_request_meta(false, None, None), b"relay-envelope");
+
     let response = reqwest::Client::new()
         .post(format!("{gateway_url}/api/internal/tunnel/relay/node-123"))
         .header(TRACE_ID_HEADER, "trace-owner-forward")
-        .body("relay-envelope")
+        .header(http::header::CONTENT_TYPE, "application/octet-stream")
+        .body(envelope.clone())
         .send()
         .await
         .expect("request should succeed");
@@ -311,8 +346,8 @@ async fn gateway_forwards_tunnel_relay_to_attachment_owner() {
         Some("trace-owner-forward")
     );
     assert_eq!(
-        response.text().await.expect("body should read"),
-        "relay-envelope"
+        response.bytes().await.expect("body should read"),
+        Bytes::from(envelope)
     );
     assert_eq!(*owner_hits.lock().expect("mutex should lock"), 1);
 
@@ -356,26 +391,9 @@ async fn gateway_owner_relay_uses_non_stream_timeout_from_envelope() {
     let gateway = build_router_with_state(state);
     let (gateway_url, gateway_handle) = start_server(gateway).await;
 
-    let meta = aether_contracts::tunnel::RequestMeta {
-        provider_id: Some("provider-1".to_string()),
-        endpoint_id: Some("endpoint-1".to_string()),
-        key_id: Some("key-1".to_string()),
-        method: "POST".to_string(),
-        url: "https://example.com/responses".to_string(),
-        headers: HashMap::new(),
-        stream: false,
-        request_timeout_ms: Some(100),
-        stream_first_byte_timeout_ms: None,
-        timeout: 60,
-        follow_redirects: None,
-        http1_only: false,
-        transport_profile: None,
-    };
+    let meta = relay_request_meta(false, Some(100), None);
+    let envelope = relay_envelope(&meta, b"relay-body");
     let encoded_meta = serde_json::to_vec(&meta).expect("metadata should encode");
-    let mut envelope = Vec::new();
-    envelope.extend_from_slice(&(encoded_meta.len() as u32).to_be_bytes());
-    envelope.extend_from_slice(&encoded_meta);
-    envelope.extend_from_slice(b"relay-body");
     let split_at = 4 + encoded_meta.len() / 2;
     let request_body = reqwest::Body::wrap_stream(stream::iter(vec![
         Ok::<Bytes, io::Error>(Bytes::copy_from_slice(&envelope[..split_at])),
@@ -446,26 +464,8 @@ async fn gateway_streams_tunnel_relay_body_to_attachment_owner() {
     let gateway = build_router_with_state(state);
     let (gateway_url, gateway_handle) = start_server(gateway).await;
 
-    let meta = aether_contracts::tunnel::RequestMeta {
-        provider_id: Some("provider-1".to_string()),
-        endpoint_id: Some("endpoint-1".to_string()),
-        key_id: Some("key-1".to_string()),
-        method: "POST".to_string(),
-        url: "https://example.com/responses".to_string(),
-        headers: HashMap::new(),
-        stream: true,
-        request_timeout_ms: Some(900_000),
-        stream_first_byte_timeout_ms: Some(100),
-        timeout: 60,
-        follow_redirects: None,
-        http1_only: false,
-        transport_profile: None,
-    };
-    let encoded_meta = serde_json::to_vec(&meta).expect("metadata should encode");
-    let mut envelope = Vec::new();
-    envelope.extend_from_slice(&(encoded_meta.len() as u32).to_be_bytes());
-    envelope.extend_from_slice(&encoded_meta);
-    envelope.extend_from_slice(b"relay-stream-envelope");
+    let meta = relay_request_meta(true, Some(900_000), Some(100));
+    let envelope = relay_envelope(&meta, b"relay-stream-envelope");
     let expected_envelope = Bytes::copy_from_slice(&envelope);
     let request_body = reqwest::Body::wrap_stream(stream::iter(vec![Ok::<Bytes, io::Error>(
         expected_envelope.clone(),
