@@ -4,19 +4,19 @@
  */
 
 import api from './client'
+import {
+  buildModelsDevTieredPricing,
+  type ModelsDevCost,
+} from './models-dev-pricing'
+import type { TieredPricingConfig } from './endpoints/types'
+
+export type { ModelsDevCost, ModelsDevCostTier, ModelsDevTokenCost } from './models-dev-pricing'
 
 // 缓存配置
 const CACHE_KEY = 'models_dev_cache'
 const CACHE_DURATION = 15 * 60 * 1000 // 15 分钟
 
 // Models.dev API 数据结构
-export interface ModelsDevCost {
-  input?: number
-  output?: number
-  reasoning?: number
-  cache_read?: number
-}
-
 export interface ModelsDevLimit {
   context?: number
   output?: number
@@ -64,6 +64,7 @@ export interface ModelsDevModelItem {
   family?: string
   inputPrice?: number
   outputPrice?: number
+  tieredPricing?: TieredPricingConfig
   contextLimit?: number
   outputLimit?: number
   supportsVision?: boolean
@@ -165,6 +166,7 @@ export async function getModelsDevList(officialOnly: boolean = true): Promise<Mo
       if (!provider.models) continue
 
       for (const [modelId, model] of Object.entries(provider.models)) {
+        const tieredPricing = buildModelsDevTieredPricing(model.cost)
         items.push({
           providerId,
           providerName: provider.name,
@@ -173,6 +175,7 @@ export async function getModelsDevList(officialOnly: boolean = true): Promise<Mo
           family: model.family,
           inputPrice: model.cost?.input,
           outputPrice: model.cost?.output,
+          tieredPricing: tieredPricing ?? undefined,
           contextLimit: model.limit?.context,
           outputLimit: model.limit?.output,
           supportsVision: model.input?.includes('image'),

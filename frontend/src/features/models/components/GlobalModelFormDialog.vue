@@ -1105,17 +1105,9 @@ function selectModel(model: ModelsDevModelItem) {
   }
   loadVideoPricingFromConfig()
 
-  if (model.inputPrice !== undefined || model.outputPrice !== undefined) {
-    tieredPricing.value = {
-      tiers: [{
-        up_to: null,
-        input_price_per_1m: model.inputPrice || 0,
-        output_price_per_1m: model.outputPrice || 0,
-      }]
-    }
-  } else {
-    tieredPricing.value = null
-  }
+  tieredPricing.value = model.tieredPricing
+    ? structuredClone(model.tieredPricing)
+    : null
 
   presetPanelCollapsed.value = true
   scrollToBasicInformation()
