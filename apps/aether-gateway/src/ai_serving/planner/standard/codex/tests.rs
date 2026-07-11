@@ -226,7 +226,7 @@ fn injects_only_codex_client_headers_for_images_requests() {
 }
 
 #[test]
-fn preserves_client_context_headers_and_enforces_codex_auth_identity_headers() {
+fn preserves_client_context_headers_and_enforces_codex_provider_identity() {
     let mut headers = BTreeMap::new();
     headers.insert(
         "x-client-request-id".to_string(),
@@ -242,6 +242,11 @@ fn preserves_client_context_headers_and_enforces_codex_auth_identity_headers() {
         "x-openai-fedramp".to_string(),
         "configured-false".to_string(),
     );
+    headers.insert(
+        "User-Agent".to_string(),
+        "AsyncOpenAI/Python 2.44.0".to_string(),
+    );
+    headers.insert("ORIGINATOR".to_string(), "sdk-client".to_string());
     let body = json!({
         "model": "gpt-5",
         "prompt_cache_key": "172c39e6-c0a0-5a70-8b63-e0f8e0d185a3",
@@ -288,8 +293,25 @@ fn preserves_client_context_headers_and_enforces_codex_auth_identity_headers() {
         headers.get("x-client-request-id"),
         Some(&"kept-by-rule-request".to_string())
     );
-    assert!(!headers.contains_key("user-agent"));
-    assert!(!headers.contains_key("originator"));
+    assert_eq!(
+        headers.get("user-agent"),
+        Some(&"codex_cli_rs/0.144.1".to_string())
+    );
+    assert_eq!(headers.get("originator"), Some(&"codex_cli_rs".to_string()));
+    assert_eq!(
+        headers
+            .keys()
+            .filter(|name| name.eq_ignore_ascii_case("user-agent"))
+            .count(),
+        1
+    );
+    assert_eq!(
+        headers
+            .keys()
+            .filter(|name| name.eq_ignore_ascii_case("originator"))
+            .count(),
+        1
+    );
     assert!(!headers.contains_key("version"));
     assert_eq!(
         headers.get("chatgpt-account-id"),

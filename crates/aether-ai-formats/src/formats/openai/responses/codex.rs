@@ -782,36 +782,6 @@ fn strip_codex_cache_control_fields(value: &mut Value) {
     }
 }
 
-fn header_map_has_non_empty_value(headers: &http::HeaderMap, header_name: &str) -> bool {
-    let target = header_name.trim().to_ascii_lowercase();
-    if target.is_empty() {
-        return false;
-    }
-
-    headers.iter().any(|(name, value)| {
-        if name.as_str().trim().to_ascii_lowercase() != target {
-            return false;
-        }
-        value
-            .to_str()
-            .ok()
-            .map(str::trim)
-            .map(|value| !value.is_empty())
-            .unwrap_or(false)
-    })
-}
-
-fn btree_map_has_non_empty_value(headers: &BTreeMap<String, String>, header_name: &str) -> bool {
-    let target = header_name.trim().to_ascii_lowercase();
-    if target.is_empty() {
-        return false;
-    }
-
-    headers
-        .iter()
-        .any(|(name, value)| name.trim().eq_ignore_ascii_case(&target) && !value.trim().is_empty())
-}
-
 fn remove_btree_header(headers: &mut BTreeMap<String, String>, header_name: &str) {
     headers.retain(|name, _| !name.trim().eq_ignore_ascii_case(header_name));
 }
@@ -863,18 +833,12 @@ pub fn parse_codex_auth_identity(decrypted_auth_config_raw: Option<&str>) -> Cod
     }
 }
 
-fn maybe_insert_default_codex_header(
+fn set_codex_client_header(
     provider_request_headers: &mut BTreeMap<String, String>,
-    original_headers: &http::HeaderMap,
     header_name: &str,
     header_value: &str,
 ) {
-    if header_map_has_non_empty_value(original_headers, header_name)
-        || btree_map_has_non_empty_value(provider_request_headers, header_name)
-    {
-        return;
-    }
-
+    remove_btree_header(provider_request_headers, header_name);
     provider_request_headers.insert(header_name.to_string(), header_value.to_string());
 }
 
@@ -1536,6 +1500,11 @@ pub fn apply_codex_openai_responses_special_body_edits_with_source_model_and_cap
     remove_empty_codex_instructions(body_object);
     strip_codex_hosted_tool_names_for_backend(body_object);
     strip_codex_hosted_tool_choice_name_for_backend(body_object);
+    if !is_openai_responses_compact_request(provider_api_format) {
+        body_object
+            .entry("tool_choice".to_string())
+            .or_insert_with(|| json!("auto"));
+    }
     if !is_openai_responses_compact_request(provider_api_format)
         && codex_openai_responses_tool_choice_references_image_generation(body_object)
     {
@@ -1718,7 +1687,7 @@ pub fn apply_codex_openai_responses_lite_header_with_capabilities(
 pub fn apply_codex_openai_special_headers(
     provider_request_headers: &mut BTreeMap<String, String>,
     provider_request_body: &Value,
-    original_headers: &http::HeaderMap,
+    _original_headers: &http::HeaderMap,
     provider_type: &str,
     provider_api_format: &str,
     _request_id: Option<&str>,
@@ -1740,15 +1709,13 @@ pub fn apply_codex_openai_special_headers(
         provider_request_headers.insert("x-openai-fedramp".to_string(), "true".to_string());
     }
 
-    maybe_insert_default_codex_header(
+    set_codex_client_header(
         provider_request_headers,
-        original_headers,
         "user-agent",
         CODEX_CLIENT_USER_AGENT,
     );
-    maybe_insert_default_codex_header(
+    set_codex_client_header(
         provider_request_headers,
-        original_headers,
         "originator",
         CODEX_CLIENT_ORIGINATOR,
     );
@@ -2375,6 +2342,7 @@ mod tests {
             json!(["reasoning.encrypted_content"])
         );
         assert_eq!(provider_request_body["parallel_tool_calls"], json!(true));
+        assert_eq!(provider_request_body["tool_choice"], json!("auto"));
         assert!(provider_request_body.get("instructions").is_none());
     }
 
@@ -3341,10 +3309,7 @@ mod tests {
         );
 
         assert_eq!(provider_request_body["model"], json!(original_model));
-        assert!(
-            provider_request_body.get("tool_choice").is_none(),
-            "tool_choice should not be injected when caller did not set it"
-        );
+        assert_eq!(provider_request_body["tool_choice"], json!("auto"));
         assert_eq!(
             provider_request_body["tools"][0]["type"],
             json!("image_generation")
