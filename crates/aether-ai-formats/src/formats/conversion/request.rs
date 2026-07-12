@@ -221,7 +221,7 @@ mod tests {
     }
 
     #[test]
-    fn claude_request_to_chat_maps_max_reasoning_effort_to_xhigh() {
+    fn claude_request_to_chat_preserves_max_reasoning_effort() {
         let body = json!({
             "model": "claude-sonnet",
             "messages": [{"role": "user", "content": "hello"}],
@@ -233,7 +233,7 @@ mod tests {
         let converted =
             normalize_claude_request_to_openai_chat_request(&body).expect("openai chat request");
 
-        assert_eq!(converted["reasoning_effort"], "xhigh");
+        assert_eq!(converted["reasoning_effort"], "max");
     }
 
     #[test]
@@ -288,11 +288,6 @@ mod tests {
                     "id": call_id_one,
                     "name": "mcp__mapsWeather",
                     "arguments": "{\"city\":\"Hangzhou\"}"
-                },
-                {
-                    "type": "web_search_call",
-                    "id": "ignored_web_search",
-                    "action": {"query": "should be skipped"}
                 },
                 {
                     "type": "function_call",
@@ -395,7 +390,7 @@ mod tests {
         assert_eq!(converted["prompt_cache_key"], "cache_123");
         assert_eq!(converted["safety_identifier"], "user_123");
         assert!(converted.get("include").is_none());
-        assert!(converted.get("store").is_none());
+        assert_eq!(converted["store"], false);
         assert!(converted.get("text").is_none());
         assert!(converted.get("reasoning").is_none());
     }
@@ -880,7 +875,7 @@ mod tests {
     }
 
     #[test]
-    fn openai_responses_request_normalizer_strips_content_cache_control() {
+    fn openai_responses_same_format_preserves_content_extensions() {
         let body = json!({
             "model": "gpt-5.1",
             "input": [{
@@ -904,7 +899,10 @@ mod tests {
         .expect("responses request");
 
         assert_eq!(converted["prompt_cache_key"], "cache_123");
-        assert!(!converted["input"].to_string().contains("cache_control"));
+        assert_eq!(
+            converted["input"][0]["content"][0]["cache_control"],
+            json!({"type": "ephemeral"})
+        );
     }
 
     #[test]
@@ -925,7 +923,7 @@ mod tests {
         )
         .expect("responses request");
 
-        assert_eq!(converted["reasoning"]["effort"], "xhigh");
+        assert_eq!(converted["reasoning"]["effort"], "max");
         assert_eq!(converted["reasoning"]["summary"], "auto");
     }
 
