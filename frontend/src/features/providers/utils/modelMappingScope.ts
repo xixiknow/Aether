@@ -1,4 +1,8 @@
-import { formatApiFormat } from '@/api/endpoints/types/api-format'
+import {
+  API_FORMATS,
+  formatApiFormat,
+  normalizeApiFormatAlias,
+} from '@/api/endpoints/types/api-format'
 
 export const MODEL_MAPPING_OPERATION_COMPACT = 'compact'
 
@@ -10,6 +14,10 @@ export const COMPACT_REQUEST_SCOPE_VALUE = JSON.stringify([
 export interface ModelMappingRequestScopeOption {
   value: string
   label: string
+}
+
+export interface ModelMappingRequestScopeCapabilities {
+  sessionCompaction: boolean
 }
 
 export interface ModelMappingRequestScopeLabels {
@@ -90,20 +98,45 @@ export function formatModelMappingRequestScope(
 
 export function modelMappingRequestScopeOptions(
   operations: string[] | undefined,
+  capabilities: ModelMappingRequestScopeCapabilities,
   labels: ModelMappingRequestScopeLabels = DEFAULT_REQUEST_SCOPE_LABELS,
 ): ModelMappingRequestScopeOption[] {
   const options: ModelMappingRequestScopeOption[] = [
     { value: ALL_REQUESTS_SCOPE_VALUE, label: labels.allRequests },
-    { value: COMPACT_REQUEST_SCOPE_VALUE, label: labels.sessionCompactionOnly },
   ]
+  if (capabilities.sessionCompaction) {
+    options.push({
+      value: COMPACT_REQUEST_SCOPE_VALUE,
+      label: labels.sessionCompactionOnly,
+    })
+  }
   const currentValue = modelMappingRequestScopeValue(operations)
-  if (!options.some(option => option.value === currentValue)) {
+  const compactScopeUnavailable = currentValue === COMPACT_REQUEST_SCOPE_VALUE
+    && !capabilities.sessionCompaction
+  if (!compactScopeUnavailable && !options.some(option => option.value === currentValue)) {
     options.push({
       value: currentValue,
       label: formatModelMappingRequestScope(operations, labels),
     })
   }
   return options
+}
+
+export function modelMappingEndpointScopeSupportsSessionCompaction(
+  endpointIds: string[] | undefined,
+  endpoints: ModelMappingEndpoint[],
+): boolean {
+  const selectedIds = [...new Set(
+    (endpointIds ?? []).map(id => id.trim()).filter(Boolean),
+  )]
+  if (selectedIds.length === 0) return false
+
+  const endpointsById = new Map(endpoints.map(endpoint => [endpoint.id, endpoint]))
+  return selectedIds.every((endpointId) => {
+    const endpoint = endpointsById.get(endpointId)
+    return endpoint !== undefined
+      && normalizeApiFormatAlias(endpoint.api_format) === API_FORMATS.OPENAI_RESPONSES
+  })
 }
 
 export function formatModelMappingEndpointLabel(

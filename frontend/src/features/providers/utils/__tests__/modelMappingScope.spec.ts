@@ -5,6 +5,7 @@ import {
   COMPACT_REQUEST_SCOPE_VALUE,
   formatModelMappingEndpointLabel,
   formatModelMappingRequestScope,
+  modelMappingEndpointScopeSupportsSessionCompaction,
   modelMappingOperationsKey,
   modelMappingOperationsFromScopeValue,
   modelMappingRequestScopeOptions,
@@ -36,10 +37,48 @@ describe('model mapping request scope', () => {
   it('preserves an unknown operation scope while editing', () => {
     const operations = ['future_operation', 'compact']
     const value = modelMappingRequestScopeValue(operations)
-    const options = modelMappingRequestScopeOptions(operations)
+    const options = modelMappingRequestScopeOptions(
+      operations,
+      { sessionCompaction: true },
+    )
 
     expect(modelMappingOperationsFromScopeValue(value)).toEqual(operations)
     expect(options).toContainEqual({ value, label: '仅匹配：future_operation, compact' })
+  })
+
+  it('offers compact scope only when the selected endpoint scope supports it', () => {
+    expect(modelMappingRequestScopeOptions(undefined, { sessionCompaction: false }))
+      .toEqual([{ value: ALL_REQUESTS_SCOPE_VALUE, label: '所有请求' }])
+    expect(modelMappingRequestScopeOptions(undefined, { sessionCompaction: true }))
+      .toContainEqual({ value: COMPACT_REQUEST_SCOPE_VALUE, label: '仅会话压缩' })
+  })
+
+  it('requires every explicitly selected endpoint to use OpenAI Responses', () => {
+    const responsesEndpoint = {
+      id: 'responses',
+      api_format: 'OPENAI_RESPONSES',
+      base_url: 'https://api.example.com/v1',
+      is_active: true,
+    }
+    const chatEndpoint = {
+      id: 'chat',
+      api_format: 'openai:chat',
+      base_url: 'https://api.example.com/v1',
+      is_active: true,
+    }
+
+    expect(modelMappingEndpointScopeSupportsSessionCompaction(
+      undefined,
+      [responsesEndpoint, chatEndpoint],
+    )).toBe(false)
+    expect(modelMappingEndpointScopeSupportsSessionCompaction(
+      [responsesEndpoint.id],
+      [responsesEndpoint, chatEndpoint],
+    )).toBe(true)
+    expect(modelMappingEndpointScopeSupportsSessionCompaction(
+      [responsesEndpoint.id, chatEndpoint.id],
+      [responsesEndpoint, chatEndpoint],
+    )).toBe(false)
   })
 
   it('rejects malformed scope values without constructing operations', () => {

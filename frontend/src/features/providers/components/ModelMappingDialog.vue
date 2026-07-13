@@ -338,6 +338,7 @@ import {
   COMPACT_REQUEST_SCOPE_VALUE,
   formatModelMappingEndpointLabel,
   formatModelMappingRequestScope,
+  modelMappingEndpointScopeSupportsSessionCompaction,
   modelMappingOperationsKey,
   modelMappingOperationsFromScopeValue,
   modelMappingRequestScopeOptions,
@@ -430,6 +431,13 @@ const normalizedSelectedEndpointIds = computed(() => {
   return selected.length > 0 ? selected : undefined
 })
 
+const sessionCompactionScopeAvailable = computed(() => {
+  return modelMappingEndpointScopeSupportsSessionCompaction(
+    normalizedSelectedEndpointIds.value,
+    props.endpoints ?? [],
+  )
+})
+
 const endpointScopeSummary = computed(() => {
   const selected = normalizedSelectedEndpointIds.value
   if (!selected || selected.length === 0) {
@@ -472,12 +480,18 @@ const requestScopeValue = computed(() => {
 })
 
 const requestScopeOptions = computed(() => {
-  return modelMappingRequestScopeOptions(selectedOperations.value, requestScopeLabels.value)
+  return modelMappingRequestScopeOptions(
+    selectedOperations.value,
+    { sessionCompaction: sessionCompactionScopeAvailable.value },
+    requestScopeLabels.value,
+  )
 })
 
 const requestScopeDescription = computed(() => {
   if (requestScopeValue.value === ALL_REQUESTS_SCOPE_VALUE) {
-    return t('providers.modelMapping.scope.allRequestsDescription')
+    return sessionCompactionScopeAvailable.value
+      ? t('providers.modelMapping.scope.allRequestsDescription')
+      : t('providers.modelMapping.scope.allRequestsDefaultDescription')
   }
   if (requestScopeValue.value === COMPACT_REQUEST_SCOPE_VALUE) {
     return t('providers.modelMapping.scope.sessionCompactionDescription')
@@ -486,6 +500,12 @@ const requestScopeDescription = computed(() => {
     operations: normalizeModelMappingOperations(selectedOperations.value).join(', '),
   })
 })
+
+watch(
+  [() => props.endpoints, () => selectedEndpointIds.value],
+  () => normalizeUnavailableSessionCompactionScope(),
+  { deep: true },
+)
 
 // 所有已知名称集合
 const allKnownNames = computed(() => {
@@ -721,6 +741,7 @@ function initForm() {
   upstreamModels.value = []
   upstreamModelsLoaded.value = false
   collapsedGroups.value = new Set()
+  normalizeUnavailableSessionCompactionScope()
 }
 
 // 处理模型选择变更
@@ -729,7 +750,21 @@ function handleModelChange(value: string) {
 }
 
 function handleRequestScopeChange(value: string) {
+  if (
+    value === COMPACT_REQUEST_SCOPE_VALUE
+    && !sessionCompactionScopeAvailable.value
+  ) return
   selectedOperations.value = modelMappingOperationsFromScopeValue(value) ?? []
+}
+
+function normalizeUnavailableSessionCompactionScope() {
+  if (props.endpoints === undefined) return
+  if (
+    requestScopeValue.value === COMPACT_REQUEST_SCOPE_VALUE
+    && !sessionCompactionScopeAvailable.value
+  ) {
+    selectedOperations.value = []
+  }
 }
 
 // 生成作用域唯一键
