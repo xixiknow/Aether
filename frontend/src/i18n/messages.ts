@@ -1773,6 +1773,8 @@ const legacyExactEnglishMessages: Record<string, string> = {
   '模型配额': 'Model quota',
   '周限额': 'Weekly limit',
   '5H限额': '5H limit',
+  '忽略 5H 限制': 'Ignore 5H limit',
+  '开启后 Codex 账号的 5H 窗口不参与耗尽判定与调度（5H 用量仍在号池管理中展示）。': 'When enabled, the Codex 5H window no longer counts toward exhaustion or scheduling (5H usage is still shown in pool management).',
   'Spark 周': 'Spark weekly',
   'Spark 5H': 'Spark 5H',
   '后重置': 'until reset',

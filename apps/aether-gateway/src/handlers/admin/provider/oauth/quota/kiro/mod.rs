@@ -347,6 +347,7 @@ pub(crate) async fn refresh_kiro_provider_quota_locally(
             "kiro",
             key.status_snapshot.as_ref(),
             metadata_update.as_ref(),
+            false,
         ) {
             payload.insert("quota_snapshot".to_string(), quota_snapshot);
         }

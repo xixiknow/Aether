@@ -297,6 +297,22 @@
           />
         </div>
 
+        <div
+          v-if="form.provider_type === 'codex' && form.pool_mode_enabled"
+          class="flex items-center justify-between p-3 border rounded-lg bg-muted/50"
+        >
+          <div class="space-y-0.5">
+            <span class="text-sm font-medium">{{ legacyT('忽略 5H 限制') }}</span>
+            <p class="text-xs text-muted-foreground leading-relaxed">
+              {{ legacyT('开启后 Codex 账号的 5H 窗口不参与耗尽判定与调度（5H 用量仍在号池管理中展示）。') }}
+            </p>
+          </div>
+          <Switch
+            :model-value="form.codex_ignore_5h_window"
+            @update:model-value="(v: boolean) => form.codex_ignore_5h_window = v"
+          />
+        </div>
+
         <div class="flex items-center justify-between gap-4 p-3 border rounded-lg bg-muted/50">
           <div class="space-y-0.5">
             <span class="text-sm font-medium">{{ legacyT('敏感信息保护') }}</span>
@@ -417,6 +433,8 @@ const form = ref({
   pool_mode_enabled: false,
   // Kiro 专属配置
   kiro_simulated_cache_enabled: false,
+  // Codex 专属配置
+  codex_ignore_5h_window: false,
 })
 
 // 重置表单
@@ -445,6 +463,8 @@ function resetForm() {
     pool_mode_enabled: false,
     // Kiro 专属配置
     kiro_simulated_cache_enabled: false,
+    // Codex 专属配置
+    codex_ignore_5h_window: false,
   }
 }
 
@@ -477,6 +497,8 @@ function loadProviderData() {
     pool_mode_enabled: poolAdvanced !== null,
     // Kiro 专属配置
     kiro_simulated_cache_enabled: props.provider.kiro_simulated_cache_enabled ?? false,
+    // Codex 专属配置
+    codex_ignore_5h_window: poolAdvanced?.codex_ignore_5h_window ?? false,
   }
 }
 
@@ -497,6 +519,9 @@ watch(() => form.value.provider_type, () => {
   }
   if (form.value.provider_type !== 'kiro') {
     form.value.kiro_simulated_cache_enabled = false
+  }
+  if (form.value.provider_type !== 'codex') {
+    form.value.codex_ignore_5h_window = false
   }
 })
 
@@ -545,7 +570,12 @@ const handleSubmit = async () => {
       stream_first_byte_timeout: form.value.stream_first_byte_timeout ?? null,
       request_timeout: form.value.request_timeout ?? null,
       pool_advanced: form.value.pool_mode_enabled
-        ? (currentPoolAdvanced ?? {})
+        ? {
+            ...(currentPoolAdvanced ?? {}),
+            ...(form.value.provider_type === 'codex'
+              ? { codex_ignore_5h_window: form.value.codex_ignore_5h_window }
+              : {}),
+          }
         : null,
       ...(form.value.provider_type === 'kiro'
         ? {

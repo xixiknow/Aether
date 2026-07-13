@@ -13,13 +13,20 @@ use crate::clock::current_unix_ms;
 
 const DEFAULT_CACHE_TTL: Duration = Duration::from_secs(300);
 const ONE_HOUR_CACHE_TTL: Duration = Duration::from_secs(3600);
+// Process-local fallback tracker capacity (bounds in-memory HashMap growth).
 const MAX_ENTRIES: usize = 2048;
+// Shared Redis-backed index capacity. Under per-client-key scoping a single busy client
+// can hold dozens of live breakpoint entries within a TTL window, so the global index must
+// be large enough that concurrent clients don't evict each other's still-hot prefixes and
+// manufacture cache misses. Redis keys are cheap; this is a simulated billing cache.
+const MAX_RUNTIME_ENTRIES: usize = 65536;
 const KIRO_PROMPT_CACHE_INDEX_KEY: &str = "kiro:prompt-cache:index";
 const PREFIX_LOOKBACK_WINDOW: usize = 20;
 const TOKENS_PER_TOOL: u64 = 150;
 const TOKENS_PER_MESSAGE: u64 = 4;
 const INLINE_IMAGE_DATA_TOKEN_PLACEHOLDER: &str = "[inline-image-data]";
 pub(crate) const KIRO_SIMULATED_CACHE_ENABLED_CONTEXT_FIELD: &str = "kiro_simulated_cache_enabled";
+pub(crate) const KIRO_AUTO_CACHE_BREAKPOINTS_CONTEXT_FIELD: &str = "kiro_auto_cache_breakpoints";
 
 static KIRO_PROMPT_CACHE_TRACKER: OnceLock<KiroPromptCacheTracker> = OnceLock::new();
 
@@ -176,7 +183,7 @@ async fn compute_kiro_prompt_cache_usage_with_runtime_state(
         store_kiro_prompt_cache_runtime_entry(runtime_state, key.as_str(), entry).await?;
     }
 
-    trim_kiro_prompt_cache_runtime_state(runtime_state, MAX_ENTRIES).await;
+    trim_kiro_prompt_cache_runtime_state(runtime_state, MAX_RUNTIME_ENTRIES).await;
 
     Ok(KiroPromptCacheUsage {
         cache_creation_input_tokens: creation_tokens,
@@ -286,6 +293,32 @@ fn encode_kiro_prompt_cache_runtime_entry(entry: KiroPromptCacheRuntimeEntry) ->
     })
 }
 
+/// Resolve the credential id that scopes the simulated prompt cache.
+///
+/// The kiro upstream (Amazon Q / CodeWhisperer) has no real prompt cache, so this scope is a
+/// pure bookkeeping choice. Scoping to the individual pool account (`provider:endpoint:key`)
+/// meant a multi-turn conversation load-balanced across accounts never re-read its own prefix.
+/// Instead we scope to the stable CLIENT api key (mirroring Anthropic's real per-key cache):
+/// every turn and every conversation from the same client key shares the cached prefix,
+/// regardless of which upstream account the pool routed to. Falls back to the account triple
+/// when no api_key_id is present in the report context (keeps prior behavior).
+pub(crate) fn kiro_cache_credential_id(
+    context: Option<&serde_json::Map<String, Value>>,
+    fallback_account_id: String,
+) -> String {
+    let api_key_id = context
+        .and_then(|context| context.get("api_key_id"))
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|api_key_id| !api_key_id.is_empty());
+    match api_key_id {
+        // Distinct namespace so a client id can never collide with an account triple in the
+        // sha256 pre-image.
+        Some(api_key_id) => format!("client:{api_key_id}"),
+        None => fallback_account_id,
+    }
+}
+
 fn kiro_prompt_cache_runtime_key(credential_id: &str, fingerprint: &[u8; 32]) -> String {
     let credential_hash: [u8; 32] = Sha256::digest(credential_id.as_bytes()).into();
     format!(
@@ -307,14 +340,51 @@ pub(crate) fn build_kiro_prompt_cache_profile(
     request_body: &Value,
     total_input_tokens: u64,
 ) -> Option<KiroPromptCacheProfile> {
+    build_kiro_prompt_cache_profile_with_auto_inject(request_body, total_input_tokens, false)
+}
+
+pub(crate) fn build_kiro_prompt_cache_profile_with_auto_inject(
+    request_body: &Value,
+    total_input_tokens: u64,
+    auto_inject: bool,
+) -> Option<KiroPromptCacheProfile> {
     let model = request_body
         .get("model")
         .and_then(Value::as_str)
         .unwrap_or_default();
     let flattened = flatten_cacheable_blocks(request_body);
     let automatic_ttl = extract_cache_ttl(request_body);
-    if automatic_ttl.is_none() && flattened.iter().all(|block| block.breakpoint_ttl.is_none()) {
-        return None;
+    let client_provided_breakpoints =
+        automatic_ttl.is_some() || flattened.iter().any(|block| block.breakpoint_ttl.is_some());
+
+    // Breakpoint strategy (only when auto_inject is on):
+    //
+    // * Client sent its own breakpoints (incl. Claude Code): honor them exactly, but ALSO pin a
+    //   tail breakpoint on the final block. Clients place their few (reused) breakpoints on the
+    //   system prefix and older messages, leaving the newest turn's content after the last
+    //   breakpoint — billed as fresh input this turn and unreadable next turn. Storing a tail
+    //   fingerprint every turn rolls that residual "new tail" into the cached prefix on the
+    //   following turn, which is what lifts a long conversation from ~80% to ~99%.
+    // * Client sent no breakpoints: synthesize two — a stable system-prefix breakpoint (identical
+    //   across turns AND conversations for this client key, so a new conversation's first turn can
+    //   read a prefix another conversation created) and a tail breakpoint (captures the growing
+    //   conversation prefix turn-over-turn). This makes caching work for ANY client.
+    //
+    // If auto_inject is off we never synthesize: honor client breakpoints or bail.
+    let mut injected_breakpoint_indices = std::collections::BTreeSet::<usize>::new();
+    if client_provided_breakpoints {
+        if auto_inject && !flattened.is_empty() {
+            injected_breakpoint_indices.insert(flattened.len() - 1);
+        }
+    } else {
+        if !auto_inject || flattened.is_empty() {
+            return None;
+        }
+        if let Some(system_prefix_index) = flattened.iter().rposition(pending_block_is_tool_or_system)
+        {
+            injected_breakpoint_indices.insert(system_prefix_index);
+        }
+        injected_breakpoint_indices.insert(flattened.len() - 1);
     }
 
     let prelude = canonicalize_json(serde_json::json!({
@@ -335,6 +405,9 @@ pub(crate) fn build_kiro_prompt_cache_profile(
     for (block_index, mut block) in flattened.into_iter().enumerate() {
         if block.breakpoint_ttl.is_none() && block_index == last_block_index {
             block.breakpoint_ttl = automatic_ttl;
+        }
+        if block.breakpoint_ttl.is_none() && injected_breakpoint_indices.contains(&block_index) {
+            block.breakpoint_ttl = Some(DEFAULT_CACHE_TTL);
         }
         cumulative_tokens = cumulative_tokens.saturating_add(block.tokens);
         let block_bytes = serde_json::to_vec(&block.value).unwrap_or_default();
@@ -418,6 +491,31 @@ pub(crate) fn kiro_simulated_cache_enabled_from_provider_config(config: Option<&
         .and_then(|kiro| kiro.get("simulated_cache_enabled"))
         .and_then(Value::as_bool)
         .unwrap_or(false)
+}
+
+/// Whether the gateway should auto-inject cache breakpoints when the client sends none.
+///
+/// Defaults to `true`: without this, only clients that set their own `cache_control`
+/// (e.g. Claude Code) ever cache, so the fleet-wide hit rate is capped by client behavior.
+/// Set `kiro.auto_cache_breakpoints: false` in provider config to opt out.
+pub(crate) fn kiro_auto_cache_breakpoints_from_provider_config(config: Option<&Value>) -> bool {
+    config
+        .and_then(Value::as_object)
+        .and_then(|config| config.get("kiro"))
+        .and_then(Value::as_object)
+        .and_then(|kiro| kiro.get("auto_cache_breakpoints"))
+        .and_then(Value::as_bool)
+        .unwrap_or(true)
+}
+
+pub(crate) fn kiro_auto_cache_breakpoints_from_report_context(
+    report_context: Option<&Value>,
+) -> bool {
+    report_context
+        .and_then(Value::as_object)
+        .and_then(|context| context.get(KIRO_AUTO_CACHE_BREAKPOINTS_CONTEXT_FIELD))
+        .and_then(Value::as_bool)
+        .unwrap_or(true)
 }
 
 pub(crate) fn kiro_simulated_cache_enabled_from_report_context(
@@ -544,6 +642,14 @@ fn push_match_candidate(
     });
 }
 
+fn pending_block_is_tool_or_system(block: &PendingBlock) -> bool {
+    block
+        .value
+        .get("kind")
+        .and_then(Value::as_str)
+        .is_some_and(|kind| kind == "tool" || kind == "system")
+}
+
 fn flatten_cacheable_blocks(request_body: &Value) -> Vec<PendingBlock> {
     let mut blocks = Vec::new();
     if let Some(tools) = request_body.get("tools").and_then(Value::as_array) {
@@ -567,7 +673,27 @@ fn flatten_cacheable_blocks(request_body: &Value) -> Vec<PendingBlock> {
     if let Some(system) = request_body.get("system") {
         match system {
             Value::Array(items) => {
+                // Skip any leading system blocks that sit BEFORE the first cache_control
+                // breakpoint and carry no cache_control of their own. Clients (e.g. Claude
+                // Code) prepend a volatile block here — an `x-anthropic-billing-header` whose
+                // `cch=<random>` changes every request — which the client never marked
+                // cacheable. Anthropic's own prefix cache treats the cacheable prefix as
+                // "first cache_control block .. last cache_control block"; a volatile block
+                // ahead of it would break caching there too. Including it in the fingerprint
+                // makes the whole rolling-prefix chain drift every request (cache_read stays 0
+                // while cache_creation climbs forever). Dropping only the leading, unmarked,
+                // pre-breakpoint blocks keeps the fingerprint stable without touching the
+                // upstream body. Blocks after (or between) cache_control breakpoints are kept
+                // — the client deliberately folded them into the cached prefix.
+                let first_breakpoint = items
+                    .iter()
+                    .position(|item| extract_cache_ttl(item).is_some());
                 for (system_index, item) in items.iter().enumerate() {
+                    if let Some(first) = first_breakpoint {
+                        if system_index < first && extract_cache_ttl(item).is_none() {
+                            continue;
+                        }
+                    }
                     let breakpoint_ttl = extract_cache_ttl(item);
                     let mut normalized = item.clone();
                     strip_cache_control(&mut normalized);
@@ -1360,6 +1486,73 @@ mod tests {
     }
 
     #[test]
+    fn volatile_leading_system_block_does_not_break_prefix_cache() {
+        // Real Claude Code shape against kiro-pool: a volatile system[0] with a per-request
+        // `cch` value and NO cache_control, followed by two large stable system blocks WITH
+        // cache_control. Before the fix, system[0] poisoned the rolling-prefix fingerprint so
+        // every request wrote a fresh cache (creation climbs, read stays 0). After the fix the
+        // volatile leading block is skipped, the stable prefix fingerprint is identical across
+        // requests, and turn N+1 reads the prefix cached by turn N.
+        let big_a = "stable system prompt for coding assistant ".repeat(2000);
+        let big_b = "you are an interactive agent for software tasks ".repeat(2000);
+        let mk = |turn: usize| {
+            serde_json::json!({
+                "model": "claude-opus-4-8",
+                "system": [
+                    // volatile, NO cache_control — the cch billing header
+                    {"type": "text", "text": format!("x-anthropic-billing-header: cc_version=2.1; cch={turn:08x}")},
+                    {"type": "text", "text": big_a, "cache_control": {"type": "ephemeral"}},
+                    {"type": "text", "text": big_b, "cache_control": {"type": "ephemeral"}},
+                ],
+                "messages": [{
+                    "role": "user",
+                    "content": [{
+                        "type": "text",
+                        "text": long_text(&format!("latest user turn {turn}")),
+                        "cache_control": {"type": "ephemeral"}
+                    }]
+                }]
+            })
+        };
+
+        let p1 = build_kiro_prompt_cache_profile(&mk(1), estimate_kiro_prompt_input_tokens(&mk(1)))
+            .expect("turn-1 cacheable");
+        let p2 = build_kiro_prompt_cache_profile(&mk(2), estimate_kiro_prompt_input_tokens(&mk(2)))
+            .expect("turn-2 cacheable");
+
+        // Stable-prefix breakpoints must overlap across turns despite the changing cch block.
+        let stored: std::collections::BTreeSet<_> =
+            p1.breakpoints.iter().map(|b| b.fingerprint).collect();
+        let queried: std::collections::BTreeSet<_> =
+            p2.match_candidates.iter().map(|c| c.fingerprint).collect();
+        assert!(
+            stored.intersection(&queried).count() > 0,
+            "stable system prefix should overlap across requests after skipping the volatile block"
+        );
+
+        let tracker = KiroPromptCacheTracker::default();
+        let start = Instant::now();
+        let created = tracker.compute_and_update_at("cred".to_string(), &p1, start);
+        assert!(created.cache_creation_input_tokens > 0);
+        assert_eq!(created.cache_read_input_tokens, 0);
+
+        let hit = tracker.compute_and_update_at(
+            "cred".to_string(),
+            &p2,
+            start + Duration::from_secs(60),
+        );
+        // The whole point: the stable prefix is now read from cache, not re-created.
+        assert!(
+            hit.cache_read_input_tokens > 0,
+            "turn 2 should read the cached stable system prefix"
+        );
+        assert!(
+            hit.cache_creation_input_tokens < created.cache_creation_input_tokens,
+            "turn 2 must not re-create the full prefix (creation should drop once the prefix is cached)"
+        );
+    }
+
+    #[test]
     fn profile_reads_message_level_cache_control() {
         let request = serde_json::json!({
             "model": "claude-sonnet-4.6",
@@ -1553,6 +1746,276 @@ mod tests {
         )));
         assert!(kiro_simulated_cache_enabled_from_report_context(Some(
             &serde_json::json!({"kiro_simulated_cache_enabled": true})
+        )));
+    }
+
+    #[test]
+    fn credential_id_prefers_api_key_id_from_context() {
+        let context = serde_json::json!({"api_key_id": "key-123"});
+        assert_eq!(
+            kiro_cache_credential_id(context.as_object(), "prov:end:acct".to_string()),
+            "client:key-123"
+        );
+    }
+
+    #[test]
+    fn credential_id_falls_back_to_account_when_api_key_id_absent() {
+        assert_eq!(
+            kiro_cache_credential_id(None, "prov:end:acct".to_string()),
+            "prov:end:acct"
+        );
+        let blank = serde_json::json!({"api_key_id": "   "});
+        assert_eq!(
+            kiro_cache_credential_id(blank.as_object(), "prov:end:acct".to_string()),
+            "prov:end:acct"
+        );
+    }
+
+    #[test]
+    fn credential_id_is_stable_across_changing_upstream_account() {
+        // The regression guard for root cause #1: same client key, different pool account →
+        // identical credential id, so pool routing churn no longer scatters the cache.
+        let context = serde_json::json!({"api_key_id": "key-123"});
+        let from_account_a =
+            kiro_cache_credential_id(context.as_object(), "prov:end:acct-A".to_string());
+        let from_account_b =
+            kiro_cache_credential_id(context.as_object(), "prov:end:acct-B".to_string());
+        assert_eq!(from_account_a, from_account_b);
+    }
+
+    #[tokio::test]
+    async fn runtime_state_reads_prefix_across_changing_upstream_account() {
+        let request = serde_json::json!({
+            "model": "claude-sonnet-4.6",
+            "system": [{
+                "type": "text",
+                "text": long_text("shared system across accounts"),
+                "cache_control": {"type": "ephemeral"}
+            }],
+            "messages": [{"role": "user", "content": "reuse across accounts"}]
+        });
+        let profile =
+            build_kiro_prompt_cache_profile(&request, estimate_kiro_prompt_input_tokens(&request))
+                .expect("cacheable request should create a cache profile");
+        let runtime = RuntimeState::memory(MemoryRuntimeStateConfig::default());
+        let context = serde_json::json!({"api_key_id": "client-key"});
+
+        // Turn 1 routed to account A.
+        let id_a = kiro_cache_credential_id(context.as_object(), "prov:end:acct-A".to_string());
+        let first = compute_kiro_prompt_cache_usage(&runtime, id_a, &profile).await;
+        // Turn 2 routed to a DIFFERENT account B — must still read the cached prefix because the
+        // credential id is scoped to the client key, not the churning upstream account.
+        let id_b = kiro_cache_credential_id(context.as_object(), "prov:end:acct-B".to_string());
+        let second = compute_kiro_prompt_cache_usage(&runtime, id_b, &profile).await;
+
+        assert!(first.cache_creation_input_tokens > 0);
+        assert_eq!(first.cache_read_input_tokens, 0);
+        assert_eq!(second.cache_creation_input_tokens, 0);
+        assert!(second.cache_read_input_tokens > 0);
+    }
+
+    #[test]
+    fn auto_inject_creates_breakpoints_when_client_sends_no_cache_control() {
+        let request = serde_json::json!({
+            "model": "claude-sonnet-4.6",
+            "system": [{"type": "text", "text": long_text("auto cached system")}],
+            "messages": [{"role": "user", "content": long_text("auto cached user turn")}]
+        });
+        let estimated = estimate_kiro_prompt_input_tokens(&request);
+
+        // Legacy behavior: no client cache_control and auto-inject off → no profile.
+        assert!(build_kiro_prompt_cache_profile_with_auto_inject(&request, estimated, false).is_none());
+
+        // Client-agnostic caching: auto-inject synthesizes breakpoints so ANY client caches.
+        let profile = build_kiro_prompt_cache_profile_with_auto_inject(&request, estimated, true)
+            .expect("auto-inject should synthesize a cache profile");
+        assert!(!profile.breakpoints.is_empty());
+    }
+
+    #[test]
+    fn auto_inject_reads_shared_system_prefix_across_turns() {
+        let system_text = long_text("stable auto system prefix");
+        let turn1 = serde_json::json!({
+            "model": "claude-sonnet-4.6",
+            "system": [{"type": "text", "text": system_text}],
+            "messages": [{"role": "user", "content": long_text("turn one user")}]
+        });
+        let turn2 = serde_json::json!({
+            "model": "claude-sonnet-4.6",
+            "system": [{"type": "text", "text": system_text}],
+            "messages": [
+                {"role": "user", "content": long_text("turn one user")},
+                {"role": "assistant", "content": "previous answer"},
+                {"role": "user", "content": long_text("turn two user")}
+            ]
+        });
+        let p1 = build_kiro_prompt_cache_profile_with_auto_inject(
+            &turn1,
+            estimate_kiro_prompt_input_tokens(&turn1),
+            true,
+        )
+        .expect("turn 1 cacheable");
+        let p2 = build_kiro_prompt_cache_profile_with_auto_inject(
+            &turn2,
+            estimate_kiro_prompt_input_tokens(&turn2),
+            true,
+        )
+        .expect("turn 2 cacheable");
+
+        let tracker = KiroPromptCacheTracker::default();
+        let start = Instant::now();
+        let created = tracker.compute_and_update_at("client".to_string(), &p1, start);
+        assert!(created.cache_creation_input_tokens > 0);
+        assert_eq!(created.cache_read_input_tokens, 0);
+
+        let hit =
+            tracker.compute_and_update_at("client".to_string(), &p2, start + Duration::from_secs(60));
+        assert!(
+            hit.cache_read_input_tokens > 0,
+            "turn 2 should read the auto-injected stable system prefix"
+        );
+    }
+
+    #[test]
+    fn auto_inject_preserves_client_breakpoints_and_adds_tail() {
+        let request = serde_json::json!({
+            "model": "claude-sonnet-4.6",
+            "system": [{
+                "type": "text",
+                "text": long_text("client marked system"),
+                "cache_control": {"type": "ephemeral"}
+            }],
+            "messages": [{"role": "user", "content": long_text("user turn")}]
+        });
+        let estimated = estimate_kiro_prompt_input_tokens(&request);
+        // auto-inject off: honor only the client's own breakpoint (the system prefix).
+        let without_auto =
+            build_kiro_prompt_cache_profile_with_auto_inject(&request, estimated, false)
+                .expect("client cache_control should be cacheable");
+        // auto-inject on: the client's breakpoints are preserved unchanged AND a tail breakpoint
+        // is pinned on the final block, so this turn's new tail is readable next turn.
+        let with_auto = build_kiro_prompt_cache_profile_with_auto_inject(&request, estimated, true)
+            .expect("client cache_control should be cacheable");
+        assert_eq!(
+            with_auto.breakpoints.len(),
+            without_auto.breakpoints.len() + 1,
+            "auto-inject should add exactly one tail breakpoint"
+        );
+        assert_eq!(
+            &with_auto.breakpoints[..without_auto.breakpoints.len()],
+            &without_auto.breakpoints[..],
+            "existing client breakpoints must be preserved unchanged"
+        );
+        assert!(
+            with_auto.breakpoints.last().unwrap().cumulative_tokens
+                > without_auto.breakpoints.last().unwrap().cumulative_tokens,
+            "tail breakpoint should cover more of the prompt than the client's last breakpoint"
+        );
+    }
+
+    #[test]
+    fn auto_inject_tail_breakpoint_lets_next_turn_read_prior_new_tail() {
+        // A client like Claude Code marks only its system prefix; the newest user turn carries no
+        // cache_control, so without a synthesized tail breakpoint that turn can never be read back
+        // next time. auto-inject pins a tail breakpoint so turn 2 reads turn 1's full prefix
+        // (system + the previously-new user tail), which is the mechanism that lifts a long
+        // conversation past the ~80% plateau.
+        let system_text = long_text("client system prefix");
+        let turn1 = serde_json::json!({
+            "model": "claude-sonnet-4.6",
+            "system": [{
+                "type": "text",
+                "text": system_text,
+                "cache_control": {"type": "ephemeral"}
+            }],
+            "messages": [{"role": "user", "content": long_text("turn one user")}]
+        });
+        let turn2 = serde_json::json!({
+            "model": "claude-sonnet-4.6",
+            "system": [{
+                "type": "text",
+                "text": system_text,
+                "cache_control": {"type": "ephemeral"}
+            }],
+            "messages": [
+                {"role": "user", "content": long_text("turn one user")},
+                {"role": "assistant", "content": "previous answer"},
+                {"role": "user", "content": long_text("turn two user")}
+            ]
+        });
+        let start = Instant::now();
+
+        // Baseline (auto-inject off): only the client's system prefix is cached, so turn 2 can read
+        // just the system prefix — turn 1's user tail was never stored.
+        let p1_off = build_kiro_prompt_cache_profile_with_auto_inject(
+            &turn1,
+            estimate_kiro_prompt_input_tokens(&turn1),
+            false,
+        )
+        .expect("turn 1 cacheable");
+        let p2_off = build_kiro_prompt_cache_profile_with_auto_inject(
+            &turn2,
+            estimate_kiro_prompt_input_tokens(&turn2),
+            false,
+        )
+        .expect("turn 2 cacheable");
+        let tracker_off = KiroPromptCacheTracker::default();
+        tracker_off.compute_and_update_at("c".to_string(), &p1_off, start);
+        let hit_off = tracker_off.compute_and_update_at(
+            "c".to_string(),
+            &p2_off,
+            start + Duration::from_secs(60),
+        );
+
+        // With auto-inject: turn 1 also stores a tail fingerprint, so turn 2 reads its whole prior
+        // prefix, including the previously-new user tail.
+        let p1_on = build_kiro_prompt_cache_profile_with_auto_inject(
+            &turn1,
+            estimate_kiro_prompt_input_tokens(&turn1),
+            true,
+        )
+        .expect("turn 1 cacheable");
+        let p2_on = build_kiro_prompt_cache_profile_with_auto_inject(
+            &turn2,
+            estimate_kiro_prompt_input_tokens(&turn2),
+            true,
+        )
+        .expect("turn 2 cacheable");
+        let tracker_on = KiroPromptCacheTracker::default();
+        tracker_on.compute_and_update_at("c".to_string(), &p1_on, start);
+        let hit_on = tracker_on.compute_and_update_at(
+            "c".to_string(),
+            &p2_on,
+            start + Duration::from_secs(60),
+        );
+
+        assert!(
+            hit_on.cache_read_input_tokens > hit_off.cache_read_input_tokens,
+            "tail breakpoint should let turn 2 read the prior new tail (on={}, off={})",
+            hit_on.cache_read_input_tokens,
+            hit_off.cache_read_input_tokens
+        );
+    }
+
+    #[test]
+    fn auto_cache_breakpoints_defaults_to_true() {
+        assert!(kiro_auto_cache_breakpoints_from_provider_config(None));
+        assert!(kiro_auto_cache_breakpoints_from_provider_config(Some(
+            &serde_json::json!({"kiro": {}})
+        )));
+        assert!(!kiro_auto_cache_breakpoints_from_provider_config(Some(
+            &serde_json::json!({"kiro": {"auto_cache_breakpoints": false}})
+        )));
+    }
+
+    #[test]
+    fn auto_cache_breakpoints_reads_report_context_flag() {
+        assert!(kiro_auto_cache_breakpoints_from_report_context(None));
+        assert!(kiro_auto_cache_breakpoints_from_report_context(Some(
+            &serde_json::json!({})
+        )));
+        assert!(!kiro_auto_cache_breakpoints_from_report_context(Some(
+            &serde_json::json!({"kiro_auto_cache_breakpoints": false})
         )));
     }
 }

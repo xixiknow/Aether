@@ -367,6 +367,7 @@ async fn sync_gemini_cli_credits_from_report(
         provider.provider_type.as_str(),
         updated_upstream_metadata.as_ref(),
         "report_effect",
+        false,
     );
     let mut updated_key = key;
     updated_key.upstream_metadata = updated_upstream_metadata;
@@ -533,6 +534,7 @@ async fn sync_grok_quota_from_report_context(
         provider.provider_type.as_str(),
         updated_upstream_metadata.as_ref(),
         "report_effect",
+        false,
     );
     let mut updated_key = key;
     updated_key.upstream_metadata = updated_upstream_metadata;
@@ -858,11 +860,24 @@ async fn sync_codex_quota_from_response_headers(
 
     let updated_upstream_metadata =
         merge_metadata_object(key.upstream_metadata.as_ref(), "codex", parsed);
+    // OpenAI removed the 5H rate limit; when the provider opts in via
+    // pool_advanced.codex_ignore_5h_window, exclude the 5h window from the
+    // exhaustion roll-up written here (the live response-headers path that
+    // was falsely marking accounts exhausted on 5h saturation).
+    let codex_ignore_5h_window = provider
+        .config
+        .as_ref()
+        .and_then(|config| config.get("pool_advanced"))
+        .and_then(Value::as_object)
+        .and_then(|pool| pool.get("codex_ignore_5h_window"))
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
     let updated_status_snapshot = sync_provider_key_quota_status_snapshot(
         key.status_snapshot.as_ref(),
         provider.provider_type.as_str(),
         updated_upstream_metadata.as_ref(),
         "response_headers",
+        codex_ignore_5h_window,
     );
     let mut updated_key = key;
     updated_key.upstream_metadata = updated_upstream_metadata;

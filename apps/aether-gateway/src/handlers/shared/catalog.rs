@@ -872,9 +872,18 @@ fn codex_quota_window_snapshot(
     Some(Value::Object(window))
 }
 
+/// Returns true for codex quota windows in the 5h class (the short rolling
+/// window). OpenAI removed the 5H rate limit, so when `codex_ignore_5h_window`
+/// is set these must not drive exhaustion. `weekly` / `spark_weekly` stay
+/// authoritative.
+fn codex_window_is_5h_class(code: Option<&str>) -> bool {
+    code.is_some_and(|code| code.eq_ignore_ascii_case("5h") || code.eq_ignore_ascii_case("spark_5h"))
+}
+
 fn build_codex_quota_status_snapshot(
     upstream_metadata: Option<&Value>,
     source: &str,
+    ignore_5h_window: bool,
 ) -> Option<Value> {
     let metadata = provider_quota_metadata_bucket(upstream_metadata, "codex")?;
     let observed_at_unix_secs = metadata
@@ -917,6 +926,27 @@ fn build_codex_quota_status_snapshot(
     .flatten()
     .collect::<Vec<_>>();
 
+    // When the 5H limit is disabled for this provider, tag every 5h-class window
+    // so it stays visible in `windows[]` for admins but never contributes to the
+    // exhaustion / usage_ratio / reset roll-up. The tag also lets the pool-side
+    // consumer (provider_pool_quota_snapshot_exhausted_decision) skip it without
+    // needing the provider config.
+    let mut windows = windows;
+    if ignore_5h_window {
+        for window in windows.iter_mut() {
+            let is_5h = window
+                .get("code")
+                .and_then(Value::as_str)
+                .map(|code| codex_window_is_5h_class(Some(code)))
+                .unwrap_or(false);
+            if is_5h {
+                if let Some(obj) = window.as_object_mut() {
+                    obj.insert("excluded_from_exhaustion".to_string(), json!(true));
+                }
+            }
+        }
+    }
+
     if windows.is_empty()
         && plan_type.is_none()
         && credits_has_credits.is_none()
@@ -931,12 +961,12 @@ fn build_codex_quota_status_snapshot(
     let primary_windows = windows
         .iter()
         .filter(|window| {
-            window
-                .get("code")
-                .and_then(Value::as_str)
-                .is_some_and(|code| {
-                    code.eq_ignore_ascii_case("weekly") || code.eq_ignore_ascii_case("5h")
-                })
+            let code = window.get("code").and_then(Value::as_str);
+            let is_primary = code.is_some_and(|code| {
+                code.eq_ignore_ascii_case("weekly") || code.eq_ignore_ascii_case("5h")
+            });
+            // Drop the 5h window from the exhaustion roll-up when the flag is set.
+            is_primary && !(ignore_5h_window && codex_window_is_5h_class(code))
         })
         .cloned()
         .collect::<Vec<_>>();
@@ -1974,10 +2004,13 @@ pub(crate) fn sync_provider_key_quota_status_snapshot(
     provider_type: &str,
     upstream_metadata: Option<&Value>,
     source: &str,
+    codex_ignore_5h_window: bool,
 ) -> Option<Value> {
     let normalized_provider_type = provider_type.trim().to_ascii_lowercase();
     let mut quota = match normalized_provider_type.as_str() {
-        "codex" => build_codex_quota_status_snapshot(upstream_metadata, source),
+        "codex" => {
+            build_codex_quota_status_snapshot(upstream_metadata, source, codex_ignore_5h_window)
+        }
         "kiro" => build_kiro_quota_status_snapshot(upstream_metadata, source),
         "chatgpt_web" => build_chatgpt_web_quota_status_snapshot(upstream_metadata, source),
         "windsurf" => build_windsurf_quota_status_snapshot(upstream_metadata, source),
@@ -2132,6 +2165,7 @@ pub(crate) fn provider_key_status_snapshot_payload(
             provider_type,
             key.upstream_metadata.as_ref(),
             "catalog_fallback",
+            false,
         )
         .or_else(|| status_snapshot.cloned())
         .unwrap_or_else(default_provider_key_status_snapshot)
@@ -3543,6 +3577,7 @@ mod tests {
             "codex",
             Some(&upstream_metadata),
             "refresh_api",
+            false,
         )
         .expect("quota snapshot should sync");
         let windows = payload
@@ -3638,6 +3673,7 @@ mod tests {
             "codex",
             Some(&upstream_metadata),
             "refresh_api",
+            false,
         )
         .expect("quota snapshot should sync");
         let weekly = payload["quota"]["windows"]
@@ -3671,6 +3707,7 @@ mod tests {
             "codex",
             Some(&upstream_metadata),
             "response_headers",
+            false,
         )
         .expect("quota snapshot should sync");
         let windows = payload["quota"]["windows"]
@@ -3689,6 +3726,111 @@ mod tests {
 
         assert_eq!(weekly.get("window_minutes"), Some(&json!(10_080u64)));
         assert_eq!(five_h.get("window_minutes"), Some(&json!(300u64)));
+    }
+
+    // Shape of the 19 falsely-exhausted codex-team-pool keys: weekly (primary)
+    // nearly empty, 5h (secondary) saturated. `primary_*` == weekly, `secondary_*`
+    // == 5h in the codex metadata bucket (post-swap for paid plans).
+    fn codex_5h_saturated_metadata() -> Value {
+        json!({
+            "codex": {
+                "updated_at": 1_775_800_000u64,
+                "plan_type": "plus",
+                "primary_used_percent": 8.0,        // weekly: 8% used
+                "primary_reset_at": 1_900_000_000u64,
+                "primary_window_minutes": 10_080u64,
+                "secondary_used_percent": 100.0,    // 5h: saturated
+                "secondary_reset_at": 1_800_000_000u64,
+                "secondary_window_minutes": 300u64,
+            }
+        })
+    }
+
+    #[test]
+    fn codex_5h_saturation_marks_exhausted_by_default() {
+        // Regression guard: with the flag OFF, a saturated 5h window still marks
+        // the account exhausted (current production behavior, unchanged).
+        let metadata = codex_5h_saturated_metadata();
+        let payload =
+            sync_provider_key_quota_status_snapshot(None, "codex", Some(&metadata), "response_headers", false)
+                .expect("quota snapshot should sync");
+        let quota = &payload["quota"];
+        assert_eq!(quota["exhausted"], json!(true));
+        assert!(quota["usage_ratio"].as_f64().unwrap() >= 1.0 - 1e-6);
+    }
+
+    #[test]
+    fn codex_ignore_5h_window_excludes_5h_from_exhaustion() {
+        // With the flag ON, the saturated 5h window must NOT mark the account
+        // exhausted; usage_ratio reflects only weekly; the 5h window is kept in
+        // windows[] but tagged excluded_from_exhaustion; weekly is untagged.
+        let metadata = codex_5h_saturated_metadata();
+        let payload =
+            sync_provider_key_quota_status_snapshot(None, "codex", Some(&metadata), "response_headers", true)
+                .expect("quota snapshot should sync");
+        let quota = &payload["quota"];
+        assert_eq!(quota["exhausted"], json!(false), "5h alone must not exhaust when flag on");
+        let usage = quota["usage_ratio"].as_f64().unwrap();
+        assert!(usage < 1.0 - 1e-6, "usage_ratio should reflect weekly only, got {usage}");
+        assert!((usage - 0.08).abs() < 1e-6, "usage_ratio should equal weekly 0.08, got {usage}");
+
+        let windows = quota["windows"].as_array().expect("windows exist");
+        let five_h = windows
+            .iter()
+            .filter_map(Value::as_object)
+            .find(|w| w.get("code") == Some(&json!("5h")))
+            .expect("5h window kept for display");
+        assert_eq!(
+            five_h.get("excluded_from_exhaustion"),
+            Some(&json!(true)),
+            "5h window must be tagged"
+        );
+        let weekly = windows
+            .iter()
+            .filter_map(Value::as_object)
+            .find(|w| w.get("code") == Some(&json!("weekly")))
+            .expect("weekly window exists");
+        assert!(
+            weekly.get("excluded_from_exhaustion").is_none(),
+            "weekly must not be tagged"
+        );
+        // reset_at / reset_seconds roll-up must reflect weekly only (not the 5h reset).
+        assert_eq!(quota["reset_at"], json!(1_900_000_000u64));
+    }
+
+    #[test]
+    fn codex_ignore_5h_window_also_excludes_spark_5h() {
+        // spark_5h is a 5h-class window and must be excluded too; spark_weekly stays authoritative.
+        let metadata = json!({
+            "codex": {
+                "updated_at": 1_775_800_000u64,
+                "plan_type": "plus",
+                "primary_used_percent": 10.0,
+                "primary_window_minutes": 10_080u64,
+                "secondary_used_percent": 100.0,
+                "secondary_window_minutes": 300u64,
+                "spark_primary_used_percent": 100.0,  // spark_5h saturated
+                "spark_primary_window_minutes": 300u64,
+                "spark_secondary_used_percent": 20.0, // spark_weekly
+                "spark_secondary_window_minutes": 10_080u64,
+            }
+        });
+        let payload =
+            sync_provider_key_quota_status_snapshot(None, "codex", Some(&metadata), "response_headers", true)
+                .expect("quota snapshot should sync");
+        let windows = payload["quota"]["windows"].as_array().unwrap();
+        let spark_5h = windows
+            .iter()
+            .filter_map(Value::as_object)
+            .find(|w| w.get("code") == Some(&json!("spark_5h")))
+            .expect("spark_5h window exists");
+        assert_eq!(
+            spark_5h.get("excluded_from_exhaustion"),
+            Some(&json!(true)),
+            "spark_5h must be tagged excluded"
+        );
+        // Only weekly-class windows drive exhaustion; both are < 100 → not exhausted.
+        assert_eq!(payload["quota"]["exhausted"], json!(false));
     }
 
     #[test]
@@ -3788,6 +3930,7 @@ mod tests {
             "antigravity",
             Some(&upstream_metadata),
             "refresh_api",
+            false,
         )
         .expect("quota snapshot should sync");
         let windows = payload["quota"]["windows"]

@@ -733,6 +733,62 @@ mod tests {
     }
 
     #[test]
+    fn codex_excluded_5h_window_does_not_mark_account_exhausted() {
+        // A 5h window tagged `excluded_from_exhaustion` (set by the snapshot builder
+        // when codex_ignore_5h_window is on) must not keep the account exhausted,
+        // even though it is saturated and unexpired — while a weekly window well
+        // below the limit is present. This mirrors the 19 falsely-exhausted keys.
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("system time should be after unix epoch")
+            .as_secs();
+
+        let mut key = sample_key(None);
+        key.status_snapshot = Some(json!({
+            "quota": {
+                "version": 2,
+                "provider_type": "codex",
+                "code": "ok",
+                "exhausted": true, // stale bool carried over; windows override it
+                "updated_at": now,
+                "windows": [
+                    { "code": "weekly", "used_ratio": 0.08,
+                      "reset_at": now.saturating_add(600_000) },
+                    { "code": "5h", "used_ratio": 1.0, "is_exhausted": true,
+                      "reset_at": now.saturating_add(3600),
+                      "excluded_from_exhaustion": true },
+                ]
+            }
+        }));
+        assert!(
+            !provider_pool_key_account_quota_exhausted(&key, "codex"),
+            "excluded 5h window must not keep the account exhausted"
+        );
+
+        // Sanity: without the tag, the same saturated 5h window DOES exhaust.
+        let mut tagged_off = sample_key(None);
+        tagged_off.status_snapshot = Some(json!({
+            "quota": {
+                "version": 2,
+                "provider_type": "codex",
+                "code": "exhausted",
+                "exhausted": true,
+                "updated_at": now,
+                "windows": [
+                    { "code": "weekly", "used_ratio": 0.08,
+                      "reset_at": now.saturating_add(600_000) },
+                    { "code": "5h", "used_ratio": 1.0, "is_exhausted": true,
+                      "reset_at": now.saturating_add(3600) },
+                ]
+            }
+        }));
+        assert!(
+            provider_pool_key_account_quota_exhausted(&tagged_off, "codex"),
+            "untagged saturated 5h window must still exhaust (default behavior)"
+        );
+    }
+
+    #[test]
     fn provider_quota_exhaustion_metadata_expires_after_reset_at() {
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)

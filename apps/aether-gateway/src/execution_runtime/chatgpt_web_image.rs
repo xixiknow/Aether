@@ -1098,6 +1098,7 @@ async fn apply_chatgpt_web_image_quota_request_delta(
         "chatgpt_web",
         latest_key.upstream_metadata.as_ref(),
         "image_request_local",
+        false,
     );
     latest_key.status_snapshot =
         sync_provider_key_oauth_status_snapshot(latest_key.status_snapshot.as_ref(), &latest_key);
@@ -1460,6 +1461,7 @@ async fn refresh_chatgpt_web_image_quota_after_success(
         "chatgpt_web",
         updated_key.upstream_metadata.as_ref(),
         "image_success",
+        false,
     );
     updated_key.status_snapshot =
         sync_provider_key_oauth_status_snapshot(updated_key.status_snapshot.as_ref(), &updated_key);

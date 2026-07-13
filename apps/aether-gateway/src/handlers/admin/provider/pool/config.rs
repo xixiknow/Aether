@@ -398,6 +398,7 @@ pub(crate) fn admin_provider_pool_config_from_config_value(
             unschedulable_rules: Vec::new(),
             lru_enabled: false,
             skip_exhausted_accounts: false,
+            codex_ignore_5h_window: false,
             sticky_session_ttl_seconds: 3600,
             latency_window_seconds: 3600,
             latency_sample_limit: 50,
@@ -431,6 +432,10 @@ pub(crate) fn admin_provider_pool_config_from_config_value(
         unschedulable_rules,
         skip_exhausted_accounts: pool_advanced
             .get("skip_exhausted_accounts")
+            .and_then(Value::as_bool)
+            .unwrap_or(false),
+        codex_ignore_5h_window: pool_advanced
+            .get("codex_ignore_5h_window")
             .and_then(Value::as_bool)
             .unwrap_or(false),
         sticky_session_ttl_seconds: pool_advanced
@@ -561,6 +566,24 @@ mod tests {
         let config = admin_provider_pool_config(&provider).expect("pool config should exist");
 
         assert!(!config.skip_exhausted_accounts);
+    }
+
+    #[test]
+    fn defaults_codex_ignore_5h_window_to_false() {
+        let provider = sample_provider(json!({ "pool_advanced": {} }));
+        let config = admin_provider_pool_config(&provider).expect("pool config should exist");
+
+        assert!(!config.codex_ignore_5h_window);
+    }
+
+    #[test]
+    fn parses_codex_ignore_5h_window_from_pool_advanced() {
+        let provider = sample_provider(json!({
+            "pool_advanced": { "codex_ignore_5h_window": true }
+        }));
+        let config = admin_provider_pool_config(&provider).expect("pool config should exist");
+
+        assert!(config.codex_ignore_5h_window);
     }
 
     #[test]

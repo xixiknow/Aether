@@ -213,12 +213,14 @@ pub(super) fn build_quota_snapshot_payload(
     provider_type: &str,
     current_status_snapshot: Option<&serde_json::Value>,
     metadata_update: Option<&serde_json::Value>,
+    codex_ignore_5h_window: bool,
 ) -> Option<serde_json::Value> {
     let updated_snapshot = sync_provider_key_quota_status_snapshot(
         current_status_snapshot,
         provider_type,
         metadata_update,
         "refresh_api",
+        codex_ignore_5h_window,
     )?;
     updated_snapshot.get("quota").cloned()
 }
@@ -312,11 +314,34 @@ pub(crate) async fn persist_provider_quota_refresh_state(
     latest_key.oauth_invalid_at_unix_secs = oauth_invalid_at_unix_secs;
     latest_key.oauth_invalid_reason = oauth_invalid_reason;
     if let Some(provider_type) = quota_snapshot_provider_type.as_deref() {
+        // For codex, honor pool_advanced.codex_ignore_5h_window when writing the
+        // persisted snapshot. This is the path the manual "refresh quota" button
+        // and the background quota probe both take to persist status_snapshot, so
+        // the flag must be applied here (not just on the response-headers path).
+        let codex_ignore_5h_window = if provider_type.eq_ignore_ascii_case("codex") {
+            state
+                .read_provider_catalog_providers_by_ids(std::slice::from_ref(
+                    &latest_key.provider_id,
+                ))
+                .await
+                .ok()
+                .and_then(|providers| providers.into_iter().next())
+                .and_then(|provider| provider.config)
+                .as_ref()
+                .and_then(|config| config.get("pool_advanced"))
+                .and_then(serde_json::Value::as_object)
+                .and_then(|pool| pool.get("codex_ignore_5h_window"))
+                .and_then(serde_json::Value::as_bool)
+                .unwrap_or(false)
+        } else {
+            false
+        };
         latest_key.status_snapshot = sync_provider_key_quota_status_snapshot(
             latest_key.status_snapshot.as_ref(),
             provider_type,
             latest_key.upstream_metadata.as_ref(),
             "refresh_api",
+            codex_ignore_5h_window,
         );
     }
     latest_key.status_snapshot =

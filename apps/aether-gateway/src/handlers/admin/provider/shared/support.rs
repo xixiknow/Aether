@@ -36,6 +36,11 @@ pub(crate) struct AdminProviderPoolConfig {
     pub(crate) unschedulable_rules: Vec<AdminProviderPoolUnschedulableRule>,
     pub(crate) lru_enabled: bool,
     pub(crate) skip_exhausted_accounts: bool,
+    /// codex-only: when true, the 5h quota window is excluded from exhaustion /
+    /// usage_ratio / reset roll-up (OpenAI removed the 5H rate limit). The 5h
+    /// window is still kept in `windows[]` for display, tagged
+    /// `excluded_from_exhaustion`.
+    pub(crate) codex_ignore_5h_window: bool,
     pub(crate) sticky_session_ttl_seconds: u64,
     pub(crate) latency_window_seconds: u64,
     pub(crate) latency_sample_limit: u64,

@@ -551,6 +551,7 @@ pub(crate) async fn refresh_grok_provider_quota_locally(
             "grok",
             key.status_snapshot.as_ref(),
             metadata_update_value.as_ref(),
+            false,
         ) {
             payload.insert("quota_snapshot".to_string(), quota_snapshot);
         }

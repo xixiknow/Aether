@@ -740,10 +740,19 @@ pub(crate) async fn refresh_codex_provider_quota_locally(
         {
             payload.insert("metadata".to_string(), metadata_update);
         }
+        let codex_ignore_5h_window = provider
+            .config
+            .as_ref()
+            .and_then(|config| config.get("pool_advanced"))
+            .and_then(Value::as_object)
+            .and_then(|pool| pool.get("codex_ignore_5h_window"))
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
         if let Some(quota_snapshot) = build_quota_snapshot_payload(
             "codex",
             key.status_snapshot.as_ref(),
             metadata_update.as_ref(),
+            codex_ignore_5h_window,
         ) {
             payload.insert("quota_snapshot".to_string(), quota_snapshot);
         }

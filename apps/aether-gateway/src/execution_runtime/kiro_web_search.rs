@@ -15,9 +15,10 @@ use tracing::{debug, warn};
 use uuid::Uuid;
 
 use crate::execution_runtime::kiro_cache::{
-    billed_input_tokens, build_kiro_prompt_cache_profile, compute_kiro_prompt_cache_usage,
-    estimate_kiro_prompt_input_tokens, kiro_simulated_cache_enabled_from_provider_config,
-    KiroPromptCacheProfile, KiroPromptCacheUsage,
+    billed_input_tokens, build_kiro_prompt_cache_profile_with_auto_inject,
+    compute_kiro_prompt_cache_usage, estimate_kiro_prompt_input_tokens,
+    kiro_auto_cache_breakpoints_from_report_context, kiro_cache_credential_id,
+    kiro_simulated_cache_enabled_from_provider_config, KiroPromptCacheProfile, KiroPromptCacheUsage,
 };
 use crate::execution_runtime::ndjson::encode_stream_frame_ndjson;
 use crate::execution_runtime::transport::{
@@ -162,12 +163,11 @@ pub(crate) async fn maybe_execute_kiro_web_search_stream(
     let cache_usage = if kiro_simulated_cache_enabled(state, plan).await {
         match request.cache_profile.as_ref() {
             Some(profile) => {
-                compute_kiro_prompt_cache_usage(
-                    state.runtime_state(),
-                    kiro_cache_credential_id(plan),
-                    profile,
-                )
-                .await
+                let credential_id = kiro_cache_credential_id(
+                    report_context.and_then(Value::as_object),
+                    kiro_web_search_account_credential_id(plan),
+                );
+                compute_kiro_prompt_cache_usage(state.runtime_state(), credential_id, profile).await
             }
             None => KiroPromptCacheUsage::default(),
         }
@@ -195,14 +195,9 @@ pub(crate) async fn maybe_execute_kiro_web_search_stream(
 }
 
 async fn kiro_simulated_cache_enabled(state: &AppState, plan: &ExecutionPlan) -> bool {
-    if !plan
-        .provider_name
-        .as_deref()
-        .is_some_and(|provider_name| provider_name.eq_ignore_ascii_case("Kiro"))
-    {
-        return false;
-    }
-
+    // Gate on provider_type (read below), NOT provider_name. Production plans carry the
+    // provider display name (e.g. "kiro-pool") in provider_name, never the literal "Kiro",
+    // so a name check here rejected every real request and the simulated cache never ran.
     match state
         .read_provider_catalog_providers_by_ids(std::slice::from_ref(&plan.provider_id))
         .await
@@ -797,11 +792,16 @@ fn detect_kiro_web_search_request(
                 .unwrap_or("claude")
                 .to_string();
             let input_tokens = estimate_input_tokens(original);
+            let auto_inject = kiro_auto_cache_breakpoints_from_report_context(report_context);
             return Some(KiroWebSearchRequest {
                 query,
                 model,
                 input_tokens,
-                cache_profile: build_kiro_prompt_cache_profile(original, input_tokens),
+                cache_profile: build_kiro_prompt_cache_profile_with_auto_inject(
+                    original,
+                    input_tokens,
+                    auto_inject,
+                ),
             });
         }
     }
@@ -991,7 +991,7 @@ fn execution_result_body_json(result: &ExecutionResult) -> Option<Value> {
     serde_json::from_slice(&bytes).ok()
 }
 
-fn kiro_cache_credential_id(plan: &ExecutionPlan) -> String {
+fn kiro_web_search_account_credential_id(plan: &ExecutionPlan) -> String {
     format!("{}:{}:{}", plan.provider_id, plan.endpoint_id, plan.key_id)
 }
 

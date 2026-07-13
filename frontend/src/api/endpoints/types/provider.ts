@@ -779,6 +779,8 @@ export interface PoolAdvancedConfig {
   sticky_session_ttl_seconds?: number | null
   load_threshold_percent?: number | null
   skip_exhausted_accounts?: boolean | null
+  // 仅 codex：忽略 5H 窗口，不参与耗尽/usage_ratio/reset 判定（5H 仍保留展示）
+  codex_ignore_5h_window?: boolean | null
   // 旧字段（兼容读取）
   lru_enabled?: boolean
   scheduling_mode?: 'lru' | 'multi_score' | null

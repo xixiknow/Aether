@@ -17,7 +17,37 @@ pub fn convert_claude_messages_to_conversation_state(
         return None;
     }
 
-    let messages = request_body.get("messages")?.as_array()?;
+    let raw_messages = request_body.get("messages")?.as_array()?;
+    if raw_messages.is_empty() {
+        return None;
+    }
+
+    // Some clients (e.g. Claude Code on certain models) place a `role: "system"`
+    // message inside the `messages` array instead of the top-level `system` field.
+    // Kiro's conversation model only understands user/assistant turns, so strip any
+    // in-band system messages here and fold their text into the system prompt (mirrors
+    // kiro-account-manager's converter). This keeps last-message and alternation
+    // invariants intact and avoids a `None` (provider_request_body_missing) build failure.
+    let mut inline_system_text = String::new();
+    let messages: Vec<&Value> = raw_messages
+        .iter()
+        .filter(|message| {
+            let is_system = message
+                .get("role")
+                .and_then(Value::as_str)
+                .is_some_and(|role| role == "system");
+            if is_system {
+                let text = system_to_text(message.get("content"));
+                if !text.is_empty() {
+                    if !inline_system_text.is_empty() {
+                        inline_system_text.push('\n');
+                    }
+                    inline_system_text.push_str(&text);
+                }
+            }
+            !is_system
+        })
+        .collect();
     if messages.is_empty() {
         return None;
     }
@@ -37,7 +67,13 @@ pub fn convert_claude_messages_to_conversation_state(
     let thinking_prefix = generate_thinking_prefix(request_body);
 
     let mut history = Vec::new();
-    let system_text = system_to_text(request_body.get("system"));
+    let mut system_text = system_to_text(request_body.get("system"));
+    if !inline_system_text.is_empty() {
+        if !system_text.is_empty() {
+            system_text.push('\n');
+        }
+        system_text.push_str(&inline_system_text);
+    }
     if !system_text.is_empty() {
         history.push(json!({
             "userInputMessage": {
@@ -55,6 +91,7 @@ pub fn convert_claude_messages_to_conversation_state(
 
     let last_is_assistant = messages
         .last()
+        .copied()
         .and_then(Value::as_object)
         .and_then(|message| message.get("role"))
         .and_then(Value::as_str)
@@ -709,6 +746,71 @@ mod tests {
                 .and_then(|value| value.as_array())
                 .map(Vec::len),
             Some(1)
+        );
+    }
+
+    #[test]
+    fn folds_in_band_system_message_into_system_prompt() {
+        // Some clients place a `role: "system"` entry inside `messages` (in addition
+        // to the top-level `system`). Previously this made the last message a non-user
+        // role and the converter returned `None` (provider_request_body_missing -> 503).
+        // It must now succeed and fold the in-band system text into the first history turn.
+        let conversation_state = convert_claude_messages_to_conversation_state(
+            &json!({
+                "system": "top-level guidance",
+                "messages": [
+                    {"role":"user","content":"hello"},
+                    {"role":"system","content":"in-band skills catalogue"}
+                ]
+            }),
+            "claude-opus-4-upstream",
+        )
+        .expect("conversation state should build even with an in-band system message");
+
+        // currentMessage falls back to the last real user turn ("hello"), NOT the system.
+        assert_eq!(
+            conversation_state
+                .get("currentMessage")
+                .and_then(|value| value.get("userInputMessage"))
+                .and_then(|value| value.get("content"))
+                .and_then(|value| value.as_str()),
+            Some("hello")
+        );
+
+        // Both the top-level and in-band system text land in the history's first user turn.
+        let history_first = conversation_state
+            .get("history")
+            .and_then(|value| value.as_array())
+            .and_then(|items| items.first())
+            .and_then(|item| item.get("userInputMessage"))
+            .and_then(|value| value.get("content"))
+            .and_then(|value| value.as_str())
+            .unwrap_or_default();
+        assert!(
+            history_first.contains("top-level guidance"),
+            "expected top-level system text in history, got: {history_first}"
+        );
+        assert!(
+            history_first.contains("in-band skills catalogue"),
+            "expected in-band system text folded into history, got: {history_first}"
+        );
+    }
+
+    #[test]
+    fn in_band_system_as_last_message_still_builds() {
+        // Regression: messages ending with a system role must not yield None.
+        let built = convert_claude_messages_to_conversation_state(
+            &json!({
+                "messages": [
+                    {"role":"user","content":"question"},
+                    {"role":"system","content":"trailing system block"}
+                ]
+            }),
+            "claude-opus-4-upstream",
+        );
+        assert!(
+            built.is_some(),
+            "trailing in-band system message should not fail the build"
         );
     }
 }

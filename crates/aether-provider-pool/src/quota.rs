@@ -263,6 +263,14 @@ pub(crate) fn provider_pool_quota_snapshot_exhausted_decision(
             let mut windows_max_ratio = None::<f64>;
 
             for window in windows.iter().filter_map(Value::as_object) {
+                // Windows tagged by the snapshot builder (e.g. codex 5h when the
+                // provider set codex_ignore_5h_window) are excluded from the
+                // exhaustion decision — they neither raise windows_max_ratio nor
+                // keep the account exhausted. The tag is self-describing, so no
+                // provider config is needed here.
+                if provider_pool_json_bool(window.get("excluded_from_exhaustion")) == Some(true) {
+                    continue;
+                }
                 if let Some(ratio) = provider_pool_json_f64(window.get("used_ratio")) {
                     windows_max_ratio =
                         Some(windows_max_ratio.map_or(ratio, |current| current.max(ratio)));

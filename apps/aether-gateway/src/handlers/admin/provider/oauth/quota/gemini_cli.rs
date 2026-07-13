@@ -254,6 +254,7 @@ pub(crate) async fn refresh_gemini_cli_provider_quota_locally(
             "gemini_cli",
             key.status_snapshot.as_ref(),
             metadata_update.as_ref(),
+            false,
         ) {
             payload.insert("quota_snapshot".to_string(), quota_snapshot);
         }

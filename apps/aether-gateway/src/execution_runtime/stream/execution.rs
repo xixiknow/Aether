@@ -66,11 +66,13 @@ use crate::execution_runtime::build_direct_execution_frame_stream;
 use crate::execution_runtime::chatgpt_web_image::maybe_execute_chatgpt_web_image_stream;
 use crate::execution_runtime::grok::maybe_execute_grok_stream;
 use crate::execution_runtime::kiro_cache::{
-    billed_input_tokens as kiro_billed_input_tokens, build_kiro_prompt_cache_profile,
-    compute_kiro_prompt_cache_usage, estimate_kiro_prompt_input_tokens,
+    billed_input_tokens as kiro_billed_input_tokens,
+    build_kiro_prompt_cache_profile_with_auto_inject, compute_kiro_prompt_cache_usage,
+    estimate_kiro_prompt_input_tokens, kiro_auto_cache_breakpoints_from_provider_config,
+    kiro_auto_cache_breakpoints_from_report_context, kiro_cache_credential_id,
     kiro_simulated_cache_enabled_from_provider_config,
     kiro_simulated_cache_enabled_from_report_context, KiroPromptCacheUsage,
-    KIRO_SIMULATED_CACHE_ENABLED_CONTEXT_FIELD,
+    KIRO_AUTO_CACHE_BREAKPOINTS_CONTEXT_FIELD, KIRO_SIMULATED_CACHE_ENABLED_CONTEXT_FIELD,
 };
 use crate::execution_runtime::kiro_web_search::maybe_execute_kiro_web_search_stream;
 use crate::execution_runtime::oauth_retry::refresh_oauth_plan_auth_for_retry;
@@ -486,14 +488,10 @@ fn build_stream_usage_payload(
 }
 
 fn seed_kiro_report_context_input_tokens(plan: &ExecutionPlan, report_context: &mut Option<Value>) {
-    if !plan
-        .provider_name
-        .as_deref()
-        .is_some_and(|provider_name| provider_name.eq_ignore_ascii_case("Kiro"))
-    {
-        return;
-    }
-
+    // Callers invoke this only after confirming the simulated-cache flag is set, so no
+    // provider gate is needed here. (Previously a provider_name=="Kiro" check ran, but
+    // production plans use the display name e.g. "kiro-pool", so it always bailed out.)
+    let _ = plan;
     let Some(context) = report_context.as_mut().and_then(Value::as_object_mut) else {
         return;
     };
@@ -520,14 +518,9 @@ async fn seed_kiro_simulated_cache_enabled(
     plan: &ExecutionPlan,
     report_context: &mut Option<Value>,
 ) {
-    if !plan
-        .provider_name
-        .as_deref()
-        .is_some_and(|provider_name| provider_name.eq_ignore_ascii_case("Kiro"))
-    {
-        return;
-    }
-
+    // Gate on provider_type (read below), NOT provider_name. Production plans carry the
+    // provider display name (e.g. "kiro-pool") in provider_name, never the literal "Kiro",
+    // so this name check rejected every real request and left the flag unset.
     let enabled = match state
         .read_provider_catalog_providers_by_ids(std::slice::from_ref(&plan.provider_id))
         .await
@@ -552,6 +545,20 @@ async fn seed_kiro_simulated_cache_enabled(
         }
     };
 
+    let auto_cache_breakpoints = match state
+        .read_provider_catalog_providers_by_ids(std::slice::from_ref(&plan.provider_id))
+        .await
+    {
+        Ok(providers) => providers
+            .iter()
+            .find(|provider| provider.id == plan.provider_id)
+            .map(|provider| {
+                kiro_auto_cache_breakpoints_from_provider_config(provider.config.as_ref())
+            })
+            .unwrap_or(true),
+        Err(_) => true,
+    };
+
     let Some(context) = report_context.as_mut().and_then(Value::as_object_mut) else {
         return;
     };
@@ -560,8 +567,13 @@ async fn seed_kiro_simulated_cache_enabled(
             KIRO_SIMULATED_CACHE_ENABLED_CONTEXT_FIELD.to_string(),
             Value::Bool(true),
         );
+        context.insert(
+            KIRO_AUTO_CACHE_BREAKPOINTS_CONTEXT_FIELD.to_string(),
+            Value::Bool(auto_cache_breakpoints),
+        );
     } else {
         context.remove(KIRO_SIMULATED_CACHE_ENABLED_CONTEXT_FIELD);
+        context.remove(KIRO_AUTO_CACHE_BREAKPOINTS_CONTEXT_FIELD);
     }
 }
 
@@ -570,16 +582,13 @@ async fn seed_kiro_report_context_prompt_cache_usage(
     plan: &ExecutionPlan,
     report_context: &mut Option<Value>,
 ) {
-    if !plan
-        .provider_name
-        .as_deref()
-        .is_some_and(|provider_name| provider_name.eq_ignore_ascii_case("Kiro"))
-    {
-        return;
-    }
-
+    // No provider_name gate: this function is gated by the `simulated_cache_enabled`
+    // flag below (seeded from provider_type + config). A name=="Kiro" check used to run
+    // here, but production plans carry the display name (e.g. "kiro-pool") so it always
+    // bailed and the simulated cache never populated cache_creation/read tokens.
     let simulated_cache_enabled =
         kiro_simulated_cache_enabled_from_report_context(report_context.as_ref());
+    let auto_inject = kiro_auto_cache_breakpoints_from_report_context(report_context.as_ref());
     let Some(context) = report_context.as_mut().and_then(Value::as_object_mut) else {
         return;
     };
@@ -609,17 +618,18 @@ async fn seed_kiro_report_context_prompt_cache_usage(
             context.insert("input_tokens".to_string(), Value::from(estimated));
             estimated
         });
-    let Some(profile) = build_kiro_prompt_cache_profile(&original_request_body, input_tokens)
-    else {
+    let Some(profile) = build_kiro_prompt_cache_profile_with_auto_inject(
+        &original_request_body,
+        input_tokens,
+        auto_inject,
+    ) else {
         return;
     };
+    let credential_id =
+        kiro_cache_credential_id(Some(context), kiro_stream_cache_credential_id(plan));
 
-    let cache_usage = compute_kiro_prompt_cache_usage(
-        state.runtime_state(),
-        kiro_stream_cache_credential_id(plan),
-        &profile,
-    )
-    .await;
+    let cache_usage =
+        compute_kiro_prompt_cache_usage(state.runtime_state(), credential_id, &profile).await;
     if cache_usage.cache_creation_input_tokens == 0 && cache_usage.cache_read_input_tokens == 0 {
         return;
     }
@@ -668,6 +678,15 @@ async fn maybe_apply_kiro_prompt_cache_usage_to_stream_summary(
     report_context: Option<&Value>,
     summary: &mut Option<ExecutionStreamTerminalSummary>,
 ) {
+    // NOTE: this guard intentionally keeps the provider_name=="Kiro" check. Unlike the
+    // report_context seed helpers (which populate the billing main path), this function only
+    // adjusts the redundant stream-summary path and, when the simulated flag is off, ZEROES
+    // cache tokens — so it must run ONLY for genuine kiro-type providers, never a passthrough
+    // custom provider (which would lose its real upstream cache counts). Production plans put
+    // the display name in provider_name, so this stays a no-op in production exactly as before
+    // the simulated-cache fix; the actual fix lives in the report_context seeds (#1–#4) whose
+    // values feed billing directly. Changing this gate to provider_type requires a catalog DB
+    // read that unit tests can't satisfy; deferred until the summary path is proven necessary.
     if !plan
         .provider_name
         .as_deref()
@@ -735,18 +754,21 @@ async fn maybe_apply_kiro_prompt_cache_usage_to_stream_summary(
         usage.input_tokens = estimated_input_tokens as i64;
     }
 
-    let Some(profile) =
-        build_kiro_prompt_cache_profile(original_request_body, estimated_input_tokens)
-    else {
+    let auto_inject = kiro_auto_cache_breakpoints_from_report_context(Some(report_context));
+    let Some(profile) = build_kiro_prompt_cache_profile_with_auto_inject(
+        original_request_body,
+        estimated_input_tokens,
+        auto_inject,
+    ) else {
         return;
     };
-
-    let cache_usage = compute_kiro_prompt_cache_usage(
-        state.runtime_state(),
+    let credential_id = kiro_cache_credential_id(
+        report_context.as_object(),
         kiro_stream_cache_credential_id(plan),
-        &profile,
-    )
-    .await;
+    );
+
+    let cache_usage =
+        compute_kiro_prompt_cache_usage(state.runtime_state(), credential_id, &profile).await;
     if cache_usage.cache_creation_input_tokens == 0 && cache_usage.cache_read_input_tokens == 0 {
         return;
     }

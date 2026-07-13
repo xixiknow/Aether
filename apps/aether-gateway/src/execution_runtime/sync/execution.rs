@@ -43,10 +43,12 @@ use crate::control::GatewayControlDecision;
 use crate::execution_runtime::chatgpt_web_image::maybe_execute_chatgpt_web_image_sync;
 use crate::execution_runtime::grok::maybe_execute_grok_sync;
 use crate::execution_runtime::kiro_cache::{
-    build_kiro_prompt_cache_profile, compute_kiro_prompt_cache_usage,
-    estimate_kiro_prompt_input_tokens, kiro_simulated_cache_enabled_from_provider_config,
+    build_kiro_prompt_cache_profile_with_auto_inject, compute_kiro_prompt_cache_usage,
+    estimate_kiro_prompt_input_tokens, kiro_auto_cache_breakpoints_from_provider_config,
+    kiro_auto_cache_breakpoints_from_report_context, kiro_cache_credential_id,
+    kiro_simulated_cache_enabled_from_provider_config,
     kiro_simulated_cache_enabled_from_report_context, KiroPromptCacheUsage,
-    KIRO_SIMULATED_CACHE_ENABLED_CONTEXT_FIELD,
+    KIRO_AUTO_CACHE_BREAKPOINTS_CONTEXT_FIELD, KIRO_SIMULATED_CACHE_ENABLED_CONTEXT_FIELD,
 };
 use crate::execution_runtime::oauth_retry::refresh_oauth_plan_auth_for_retry;
 #[cfg(test)]
@@ -450,14 +452,10 @@ fn seed_kiro_sync_report_context_input_tokens(
     plan: &ExecutionPlan,
     report_context: &mut Option<Value>,
 ) {
-    if !plan
-        .provider_name
-        .as_deref()
-        .is_some_and(|provider_name| provider_name.eq_ignore_ascii_case("Kiro"))
-    {
-        return;
-    }
-
+    // Callers invoke this only after confirming the simulated-cache flag is set, so no provider
+    // gate is needed here. (Previously a provider_name=="Kiro" check ran, but production plans
+    // use the display name e.g. "kiro-pool", so it always bailed out — matching the stream twin.)
+    let _ = plan;
     let Some(context) = report_context.as_mut().and_then(Value::as_object_mut) else {
         return;
     };
@@ -484,25 +482,18 @@ async fn seed_kiro_sync_simulated_cache_enabled(
     plan: &ExecutionPlan,
     report_context: &mut Option<Value>,
 ) {
-    if !plan
-        .provider_name
-        .as_deref()
-        .is_some_and(|provider_name| provider_name.eq_ignore_ascii_case("Kiro"))
-    {
-        return;
-    }
-
-    let enabled = match state
+    // Gate on provider_type (read below), NOT provider_name. Production plans carry the
+    // provider display name (e.g. "kiro-pool") in provider_name, never the literal "Kiro", so
+    // this name check rejected every real request and left the simulated cache disabled on the
+    // sync path. This mirrors the stream twin's fix.
+    let provider = match state
         .read_provider_catalog_providers_by_ids(std::slice::from_ref(&plan.provider_id))
         .await
     {
         Ok(providers) => providers
-            .iter()
+            .into_iter()
             .find(|provider| provider.id == plan.provider_id)
-            .filter(|provider| provider.provider_type.eq_ignore_ascii_case("kiro"))
-            .is_some_and(|provider| {
-                kiro_simulated_cache_enabled_from_provider_config(provider.config.as_ref())
-            }),
+            .filter(|provider| provider.provider_type.eq_ignore_ascii_case("kiro")),
         Err(err) => {
             warn!(
                 event_name = "kiro_simulated_cache_config_read_failed",
@@ -512,9 +503,16 @@ async fn seed_kiro_sync_simulated_cache_enabled(
                 error = ?err,
                 "failed to read Kiro simulated cache provider config; defaulting disabled"
             );
-            false
+            None
         }
     };
+    let enabled = provider
+        .as_ref()
+        .is_some_and(|provider| kiro_simulated_cache_enabled_from_provider_config(provider.config.as_ref()));
+    let auto_cache_breakpoints = provider
+        .as_ref()
+        .map(|provider| kiro_auto_cache_breakpoints_from_provider_config(provider.config.as_ref()))
+        .unwrap_or(true);
 
     let Some(context) = report_context.as_mut().and_then(Value::as_object_mut) else {
         return;
@@ -524,8 +522,13 @@ async fn seed_kiro_sync_simulated_cache_enabled(
             KIRO_SIMULATED_CACHE_ENABLED_CONTEXT_FIELD.to_string(),
             Value::Bool(true),
         );
+        context.insert(
+            KIRO_AUTO_CACHE_BREAKPOINTS_CONTEXT_FIELD.to_string(),
+            Value::Bool(auto_cache_breakpoints),
+        );
     } else {
         context.remove(KIRO_SIMULATED_CACHE_ENABLED_CONTEXT_FIELD);
+        context.remove(KIRO_AUTO_CACHE_BREAKPOINTS_CONTEXT_FIELD);
     }
 }
 
@@ -534,16 +537,13 @@ async fn seed_kiro_sync_report_context_prompt_cache_usage(
     plan: &ExecutionPlan,
     report_context: &mut Option<Value>,
 ) {
-    if !plan
-        .provider_name
-        .as_deref()
-        .is_some_and(|provider_name| provider_name.eq_ignore_ascii_case("Kiro"))
-    {
-        return;
-    }
-
+    // No provider_name gate: this function is gated by the `simulated_cache_enabled` flag below
+    // (seeded from provider_type + config). A name=="Kiro" check used to run here, but production
+    // plans carry the display name (e.g. "kiro-pool") so it always bailed and the simulated cache
+    // never populated cache_creation/read tokens on the sync path. Mirrors the stream twin.
     let simulated_cache_enabled =
         kiro_simulated_cache_enabled_from_report_context(report_context.as_ref());
+    let auto_inject = kiro_auto_cache_breakpoints_from_report_context(report_context.as_ref());
     let Some(context) = report_context.as_mut().and_then(Value::as_object_mut) else {
         return;
     };
@@ -573,17 +573,18 @@ async fn seed_kiro_sync_report_context_prompt_cache_usage(
             context.insert("input_tokens".to_string(), Value::from(estimated));
             estimated
         });
-    let Some(profile) = build_kiro_prompt_cache_profile(&original_request_body, input_tokens)
-    else {
+    let Some(profile) = build_kiro_prompt_cache_profile_with_auto_inject(
+        &original_request_body,
+        input_tokens,
+        auto_inject,
+    ) else {
         return;
     };
+    let credential_id =
+        kiro_cache_credential_id(Some(context), kiro_sync_cache_credential_id(plan));
 
-    let cache_usage = compute_kiro_prompt_cache_usage(
-        state.runtime_state(),
-        kiro_sync_cache_credential_id(plan),
-        &profile,
-    )
-    .await;
+    let cache_usage =
+        compute_kiro_prompt_cache_usage(state.runtime_state(), credential_id, &profile).await;
     if cache_usage.cache_creation_input_tokens == 0 && cache_usage.cache_read_input_tokens == 0 {
         return;
     }

@@ -1817,6 +1817,7 @@ interface QuotaProgressItem {
   resetSeconds?: number | null
   updatedAtSeconds?: number | null
   allowDynamicReset?: boolean
+  excludedFromExhaustion?: boolean
 }
 
 interface QuotaProgressDisplayItem {
@@ -1876,14 +1877,23 @@ const quotaProgressMap = computed<Record<string, QuotaProgressItem[]>>(() => {
 const quotaProgressDisplayMap = computed<Record<string, QuotaProgressDisplayItem[]>>(() => {
   const map: Record<string, QuotaProgressDisplayItem[]> = {}
   for (const key of keyPage.value.keys) {
-    map[key.key_id] = (quotaProgressMap.value[key.key_id] || []).map(item => ({
-      label: getQuotaProgressLabel(item.label),
-      remainingPercent: item.remainingPercent,
-      resetText: getQuotaProgressResetDisplayText(item),
-      meterText: getQuotaProgressMeterDisplayText(item),
-      barClass: getQuotaRemainingBarColorByRemaining(item.remainingPercent),
-      meterClass: getQuotaRemainingClassByRemaining(item.remainingPercent),
-    }))
+    map[key.key_id] = (quotaProgressMap.value[key.key_id] || []).map((item) => {
+      const excluded = item.excludedFromExhaustion === true
+      return {
+        label: excluded
+          ? `${getQuotaProgressLabel(item.label)}·已放开`
+          : getQuotaProgressLabel(item.label),
+        remainingPercent: item.remainingPercent,
+        resetText: getQuotaProgressResetDisplayText(item),
+        meterText: getQuotaProgressMeterDisplayText(item),
+        barClass: excluded
+          ? 'bg-gray-300 dark:bg-gray-600'
+          : getQuotaRemainingBarColorByRemaining(item.remainingPercent),
+        meterClass: excluded
+          ? 'text-muted-foreground'
+          : getQuotaRemainingClassByRemaining(item.remainingPercent),
+      }
+    })
   }
   return map
 })
@@ -3497,6 +3507,7 @@ function buildQuotaProgressItemsFromSnapshot(key: PoolKeyDetail): QuotaProgressI
         resetAtSeconds: normalizeUnixSeconds(window?.reset_at ?? quotaResetAtSeconds ?? null),
         resetSeconds: normalizeRemainingSeconds(window?.reset_seconds ?? quotaResetSeconds ?? null),
         updatedAtSeconds: getQuotaSnapshotUpdatedAtSeconds(quota),
+        excludedFromExhaustion: window?.excluded_from_exhaustion === true,
       })
     }
     return items
