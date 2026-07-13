@@ -3406,6 +3406,127 @@ async fn gateway_handles_admin_pool_batch_action_locally_with_trusted_admin_prin
 }
 
 #[tokio::test]
+async fn gateway_batch_updates_shared_pool_key_configuration() {
+    let provider = sample_provider("provider-openai", "openai", 10).with_transport_fields(
+        true,
+        false,
+        true,
+        None,
+        None,
+        None,
+        None,
+        None,
+        Some(json!({
+            "pool_advanced": {
+                "enabled": true
+            }
+        })),
+    );
+    let mut first_key = sample_key("key-openai-a", "provider-openai", "openai:chat", "sk-a");
+    first_key.name = "alpha".to_string();
+    first_key.auto_fetch_models = true;
+    first_key.allowed_models = Some(json!(["legacy-model"]));
+    let mut second_key = sample_key("key-openai-b", "provider-openai", "openai:chat", "sk-b");
+    second_key.name = "beta".to_string();
+    let provider_catalog_repository = Arc::new(InMemoryProviderCatalogReadRepository::seed(
+        vec![provider],
+        Vec::new(),
+        vec![first_key, second_key],
+    ));
+    let state = AppState::new()
+        .expect("gateway should build")
+        .with_data_state_for_tests(
+            GatewayDataState::with_provider_catalog_repository_for_tests(Arc::clone(
+                &provider_catalog_repository,
+            )),
+        );
+
+    let response = local_admin_pool_response(
+        &state,
+        http::Method::PATCH,
+        "/api/admin/pool/provider-openai/keys/batch-update",
+        Some(json!({
+            "key_ids": ["key-openai-b", "key-openai-a", "key-openai-a"],
+            "patch": {
+                "api_formats": ["openai:responses"],
+                "internal_priority": 7,
+                "rpm_limit": null,
+                "auto_fetch_models": false,
+                "allowed_models": ["gpt-5.6-sol", "gpt-5.6-luna"],
+                "locked_models": [],
+                "note": null
+            }
+        })),
+    )
+    .await;
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let payload: serde_json::Value = serde_json::from_slice(
+        &to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("body should read"),
+    )
+    .expect("json body should parse");
+    assert_eq!(payload["affected"], json!(2));
+    assert_eq!(payload["model_sync"], serde_json::Value::Null);
+
+    let stored = provider_catalog_repository
+        .list_keys_by_ids(&["key-openai-a".to_string(), "key-openai-b".to_string()])
+        .await
+        .expect("keys should load");
+    assert_eq!(stored.len(), 2);
+    for key in stored {
+        assert_eq!(key.api_formats, Some(json!(["openai:responses"])));
+        assert_eq!(key.internal_priority, 7);
+        assert_eq!(key.rpm_limit, None);
+        assert!(!key.auto_fetch_models);
+        assert_eq!(
+            key.allowed_models,
+            Some(json!(["gpt-5.6-sol", "gpt-5.6-luna"]))
+        );
+        assert_eq!(key.locked_models, None);
+        assert_eq!(key.note, None);
+    }
+}
+
+#[tokio::test]
+async fn gateway_rejects_pool_batch_update_before_writing_any_key() {
+    let provider = sample_provider("provider-openai", "openai", 10);
+    let mut first_key = sample_key("key-openai-a", "provider-openai", "openai:chat", "sk-a");
+    first_key.internal_priority = 3;
+    let provider_catalog_repository = Arc::new(InMemoryProviderCatalogReadRepository::seed(
+        vec![provider],
+        Vec::new(),
+        vec![first_key],
+    ));
+    let state = AppState::new()
+        .expect("gateway should build")
+        .with_data_state_for_tests(
+            GatewayDataState::with_provider_catalog_repository_for_tests(Arc::clone(
+                &provider_catalog_repository,
+            )),
+        );
+
+    let response = local_admin_pool_response(
+        &state,
+        http::Method::PATCH,
+        "/api/admin/pool/provider-openai/keys/batch-update",
+        Some(json!({
+            "key_ids": ["key-openai-a", "key-missing"],
+            "patch": { "internal_priority": 9 }
+        })),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+
+    let stored = provider_catalog_repository
+        .list_keys_by_ids(&["key-openai-a".to_string()])
+        .await
+        .expect("key should load");
+    assert_eq!(stored[0].internal_priority, 3);
+}
+
+#[tokio::test]
 async fn gateway_handles_admin_pool_batch_delete_locally_with_trusted_admin_principal() {
     let upstream_hits = Arc::new(Mutex::new(0usize));
     let upstream_hits_clone = Arc::clone(&upstream_hits);
