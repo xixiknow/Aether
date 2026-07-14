@@ -133,12 +133,23 @@ pub(crate) fn build_admin_provider_summary_value(
         .and_then(|cfg| cfg.get("architecture_id"))
         .and_then(serde_json::Value::as_str)
         .map(ToOwned::to_owned);
-    let kiro_simulated_cache_enabled = config
+    let kiro_config = config
         .and_then(|cfg| cfg.get("kiro"))
-        .and_then(serde_json::Value::as_object)
+        .and_then(serde_json::Value::as_object);
+    let kiro_simulated_cache_enabled = kiro_config
         .and_then(|cfg| cfg.get("simulated_cache_enabled"))
         .and_then(serde_json::Value::as_bool)
         .unwrap_or(false);
+    let kiro_simulated_cache_target_percent = kiro_config
+        .and_then(|cfg| cfg.get("simulated_cache_target_percent"))
+        .and_then(serde_json::Value::as_u64)
+        .unwrap_or(99)
+        .clamp(1, 99);
+    let kiro_simulated_cache_ttl_secs = kiro_config
+        .and_then(|cfg| cfg.get("simulated_cache_ttl_secs"))
+        .and_then(serde_json::Value::as_u64)
+        .unwrap_or(3600)
+        .clamp(60, 86_400);
     let ops_quota_alert_enabled = provider_ops_config
         .and_then(serde_json::Value::as_object)
         .and_then(|cfg| cfg.get("quota_alert"))
@@ -205,6 +216,8 @@ pub(crate) fn build_admin_provider_summary_value(
         "ops_configured": ops_configured,
         "ops_architecture_id": ops_architecture_id,
         "kiro_simulated_cache_enabled": kiro_simulated_cache_enabled,
+        "kiro_simulated_cache_target_percent": kiro_simulated_cache_target_percent,
+        "kiro_simulated_cache_ttl_secs": kiro_simulated_cache_ttl_secs,
         "codex_cyber_flag_passthrough_enabled": codex_cyber_flag_passthrough_enabled(&provider.provider_type, provider.config.as_ref()),
         "ops_quota_alert_enabled": ops_quota_alert_enabled,
         "created_at": endpoint_timestamp_or_now(provider.created_at_unix_ms, now_unix_secs),

@@ -1,5 +1,45 @@
 use std::collections::BTreeSet;
 
+pub(crate) fn normalize_kiro_cache_config(
+    config: &mut serde_json::Map<String, serde_json::Value>,
+) -> Result<(), String> {
+    let Some(kiro) = config.get_mut("kiro") else {
+        return Ok(());
+    };
+    let Some(kiro) = kiro.as_object_mut() else {
+        return Err("config.kiro 必须是 JSON 对象".to_string());
+    };
+    kiro.remove("auto_cache_breakpoints");
+
+    if let Some(value) = kiro.get("simulated_cache_enabled") {
+        if !value.is_boolean() {
+            return Err("config.kiro.simulated_cache_enabled 必须是布尔值".to_string());
+        }
+    }
+    validate_kiro_cache_u64(kiro, "simulated_cache_target_percent", 1, 99)?;
+    validate_kiro_cache_u64(kiro, "simulated_cache_ttl_secs", 60, 86_400)?;
+    validate_kiro_cache_u64(kiro, "simulated_cache_max_entries", 1024, 1_000_000)?;
+    Ok(())
+}
+
+fn validate_kiro_cache_u64(
+    kiro: &serde_json::Map<String, serde_json::Value>,
+    field: &str,
+    min: u64,
+    max: u64,
+) -> Result<(), String> {
+    let Some(value) = kiro.get(field) else {
+        return Ok(());
+    };
+    let Some(value) = value.as_u64() else {
+        return Err(format!("config.kiro.{field} 必须是整数"));
+    };
+    if !(min..=max).contains(&value) {
+        return Err(format!("config.kiro.{field} 必须在 {min} 到 {max} 之间"));
+    }
+    Ok(())
+}
+
 pub(crate) fn normalize_provider_type_input(value: &str) -> Result<String, String> {
     let normalized = value.trim().to_ascii_lowercase();
     match normalized.as_str() {
@@ -211,8 +251,8 @@ mod tests {
     use super::{
         normalize_allow_auth_channel_mismatch_formats, normalize_api_format_json_object_keys,
         normalize_api_format_list, normalize_auth_type, normalize_auth_type_by_format,
-        normalize_chat_pii_redaction_config, normalize_pool_advanced_config,
-        normalize_provider_type_input, validate_vertex_api_formats,
+        normalize_chat_pii_redaction_config, normalize_kiro_cache_config,
+        normalize_pool_advanced_config, normalize_provider_type_input, validate_vertex_api_formats,
     };
     use serde_json::json;
 
@@ -222,6 +262,27 @@ mod tests {
             normalize_pool_advanced_config(Some(json!({}))).expect("empty object should normalize"),
             Some(json!({}))
         );
+    }
+
+    #[test]
+    fn normalize_kiro_cache_config_validates_ranges_and_removes_legacy_flag() {
+        let mut config = json!({
+            "kiro": {
+                "simulated_cache_enabled": true,
+                "simulated_cache_target_percent": 99,
+                "simulated_cache_ttl_secs": 3600,
+                "simulated_cache_max_entries": 65536,
+                "auto_cache_breakpoints": false
+            }
+        })
+        .as_object()
+        .unwrap()
+        .clone();
+        normalize_kiro_cache_config(&mut config).expect("valid cache config should normalize");
+        assert!(config["kiro"].get("auto_cache_breakpoints").is_none());
+
+        config["kiro"]["simulated_cache_target_percent"] = json!(100);
+        assert!(normalize_kiro_cache_config(&mut config).is_err());
     }
 
     #[test]

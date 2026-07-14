@@ -8,6 +8,7 @@ mod constants;
 mod fallback;
 mod grok;
 mod kiro_cache;
+mod kiro_cache_v2;
 mod kiro_web_search;
 pub(crate) mod ndjson;
 mod oauth_retry;

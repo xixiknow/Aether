@@ -3,6 +3,7 @@ use crate::handlers::admin::provider::shared::support::{
     normalize_provider_billing_type, parse_optional_rfc3339_unix_secs,
 };
 use crate::handlers::admin::provider::write::normalize::normalize_chat_pii_redaction_config;
+use crate::handlers::admin::provider::write::normalize::normalize_kiro_cache_config;
 use crate::handlers::admin::provider::write::normalize::normalize_pool_advanced_config;
 use crate::handlers::admin::provider::write::normalize::normalize_provider_type_input;
 use crate::handlers::admin::request::AdminAppState;
@@ -141,6 +142,7 @@ pub(crate) async fn build_admin_create_provider_record(
             config_map.insert("chat_pii_redaction".to_string(), value);
         }
     }
+    normalize_kiro_cache_config(&mut config_map)?;
     let config = (!config_map.is_empty()).then_some(serde_json::Value::Object(config_map));
 
     let now_unix_secs = SystemTime::now()

@@ -50,6 +50,8 @@ function normalizeProviderSummary(
     chat_pii_redaction: normalizeChatPiiRedactionProvider(provider.chat_pii_redaction),
     pool_advanced: normalizePoolAdvanced(provider.pool_advanced),
     kiro_simulated_cache_enabled: provider.kiro_simulated_cache_enabled ?? false,
+    kiro_simulated_cache_target_percent: provider.kiro_simulated_cache_target_percent ?? 99,
+    kiro_simulated_cache_ttl_secs: provider.kiro_simulated_cache_ttl_secs ?? 3600,
   }
 }
 

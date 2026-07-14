@@ -44,11 +44,13 @@ use crate::execution_runtime::chatgpt_web_image::maybe_execute_chatgpt_web_image
 use crate::execution_runtime::grok::maybe_execute_grok_sync;
 use crate::execution_runtime::kiro_cache::{
     build_kiro_prompt_cache_profile_with_auto_inject, compute_kiro_prompt_cache_usage,
-    estimate_kiro_prompt_input_tokens, kiro_auto_cache_breakpoints_from_provider_config,
-    kiro_auto_cache_breakpoints_from_report_context, kiro_cache_credential_id,
-    kiro_simulated_cache_enabled_from_provider_config,
-    kiro_simulated_cache_enabled_from_report_context, KiroPromptCacheUsage,
-    KIRO_AUTO_CACHE_BREAKPOINTS_CONTEXT_FIELD, KIRO_SIMULATED_CACHE_ENABLED_CONTEXT_FIELD,
+    estimate_kiro_prompt_input_tokens, kiro_auto_cache_breakpoints_from_report_context,
+    kiro_cache_credential_id, kiro_simulated_cache_enabled_from_report_context,
+    KiroPromptCacheUsage, KIRO_SIMULATED_CACHE_ENABLED_CONTEXT_FIELD,
+};
+use crate::execution_runtime::kiro_cache_v2::{
+    commit_stable_cache_usage, probe_and_seed_stable_cache_usage, seed_stable_cache_policy_context,
+    stable_cache_policy_from_provider_config,
 };
 use crate::execution_runtime::oauth_retry::refresh_oauth_plan_auth_for_retry;
 #[cfg(test)]
@@ -486,14 +488,16 @@ async fn seed_kiro_sync_simulated_cache_enabled(
     // provider display name (e.g. "kiro-pool") in provider_name, never the literal "Kiro", so
     // this name check rejected every real request and left the simulated cache disabled on the
     // sync path. This mirrors the stream twin's fix.
-    let provider = match state
+    let policy = match state
         .read_provider_catalog_providers_by_ids(std::slice::from_ref(&plan.provider_id))
         .await
     {
         Ok(providers) => providers
             .into_iter()
             .find(|provider| provider.id == plan.provider_id)
-            .filter(|provider| provider.provider_type.eq_ignore_ascii_case("kiro")),
+            .filter(|provider| provider.provider_type.eq_ignore_ascii_case("kiro"))
+            .map(|provider| stable_cache_policy_from_provider_config(provider.config.as_ref()))
+            .unwrap_or_default(),
         Err(err) => {
             warn!(
                 event_name = "kiro_simulated_cache_config_read_failed",
@@ -503,33 +507,10 @@ async fn seed_kiro_sync_simulated_cache_enabled(
                 error = ?err,
                 "failed to read Kiro simulated cache provider config; defaulting disabled"
             );
-            None
+            Default::default()
         }
     };
-    let enabled = provider
-        .as_ref()
-        .is_some_and(|provider| kiro_simulated_cache_enabled_from_provider_config(provider.config.as_ref()));
-    let auto_cache_breakpoints = provider
-        .as_ref()
-        .map(|provider| kiro_auto_cache_breakpoints_from_provider_config(provider.config.as_ref()))
-        .unwrap_or(true);
-
-    let Some(context) = report_context.as_mut().and_then(Value::as_object_mut) else {
-        return;
-    };
-    if enabled {
-        context.insert(
-            KIRO_SIMULATED_CACHE_ENABLED_CONTEXT_FIELD.to_string(),
-            Value::Bool(true),
-        );
-        context.insert(
-            KIRO_AUTO_CACHE_BREAKPOINTS_CONTEXT_FIELD.to_string(),
-            Value::Bool(auto_cache_breakpoints),
-        );
-    } else {
-        context.remove(KIRO_SIMULATED_CACHE_ENABLED_CONTEXT_FIELD);
-        context.remove(KIRO_AUTO_CACHE_BREAKPOINTS_CONTEXT_FIELD);
-    }
+    seed_stable_cache_policy_context(report_context, policy);
 }
 
 async fn seed_kiro_sync_report_context_prompt_cache_usage(
@@ -543,7 +524,11 @@ async fn seed_kiro_sync_report_context_prompt_cache_usage(
     // never populated cache_creation/read tokens on the sync path. Mirrors the stream twin.
     let simulated_cache_enabled =
         kiro_simulated_cache_enabled_from_report_context(report_context.as_ref());
-    let auto_inject = kiro_auto_cache_breakpoints_from_report_context(report_context.as_ref());
+    let stable_v2 = report_context
+        .as_ref()
+        .and_then(|context| context.get("kiro_simulated_cache_strategy"))
+        .and_then(Value::as_str)
+        .is_some_and(|strategy| strategy == "stable_99_v2");
     let Some(context) = report_context.as_mut().and_then(Value::as_object_mut) else {
         return;
     };
@@ -561,41 +546,45 @@ async fn seed_kiro_sync_report_context_prompt_cache_usage(
         return;
     }
 
-    let Some(original_request_body) = context.get("original_request_body").cloned() else {
-        return;
-    };
-    let input_tokens = context
-        .get("input_tokens")
-        .and_then(Value::as_u64)
-        .filter(|value| *value > 0)
-        .unwrap_or_else(|| {
-            let estimated = estimate_kiro_prompt_input_tokens(&original_request_body);
-            context.insert("input_tokens".to_string(), Value::from(estimated));
-            estimated
-        });
-    let Some(profile) = build_kiro_prompt_cache_profile_with_auto_inject(
-        &original_request_body,
-        input_tokens,
-        auto_inject,
-    ) else {
-        return;
-    };
-    let credential_id =
-        kiro_cache_credential_id(Some(context), kiro_sync_cache_credential_id(plan));
-
-    let cache_usage =
-        compute_kiro_prompt_cache_usage(state.runtime_state(), credential_id, &profile).await;
-    if cache_usage.cache_creation_input_tokens == 0 && cache_usage.cache_read_input_tokens == 0 {
+    if !stable_v2 {
+        let Some(original_request_body) = context.get("original_request_body").cloned() else {
+            return;
+        };
+        let input_tokens = context
+            .get("input_tokens")
+            .and_then(Value::as_u64)
+            .filter(|value| *value > 0)
+            .unwrap_or_else(|| {
+                let estimated = estimate_kiro_prompt_input_tokens(&original_request_body);
+                context.insert("input_tokens".to_string(), Value::from(estimated));
+                estimated
+            });
+        let auto_inject =
+            kiro_auto_cache_breakpoints_from_report_context(Some(&Value::Object(context.clone())));
+        let Some(profile) = build_kiro_prompt_cache_profile_with_auto_inject(
+            &original_request_body,
+            input_tokens,
+            auto_inject,
+        ) else {
+            return;
+        };
+        let credential_id =
+            kiro_cache_credential_id(Some(context), kiro_sync_cache_credential_id(plan));
+        let usage =
+            compute_kiro_prompt_cache_usage(state.runtime_state(), credential_id, &profile).await;
+        context.insert(
+            "cache_creation_input_tokens".to_string(),
+            Value::from(usage.cache_creation_input_tokens),
+        );
+        context.insert(
+            "cache_read_input_tokens".to_string(),
+            Value::from(usage.cache_read_input_tokens),
+        );
         return;
     }
-    context.insert(
-        "cache_creation_input_tokens".to_string(),
-        Value::from(cache_usage.cache_creation_input_tokens),
-    );
-    context.insert(
-        "cache_read_input_tokens".to_string(),
-        Value::from(cache_usage.cache_read_input_tokens),
-    );
+
+    let _ = context;
+    let _ = probe_and_seed_stable_cache_usage(state.runtime_state(), plan, report_context).await;
 }
 
 fn kiro_sync_cache_credential_id(plan: &ExecutionPlan) -> String {
@@ -2299,9 +2288,6 @@ async fn execute_execution_runtime_sync_impl(
         attach_provider_response_headers_to_report_context(report_context, &headers);
     if (200..300).contains(&status_code) {
         seed_kiro_sync_simulated_cache_enabled(state, &plan, &mut report_context).await;
-        if kiro_simulated_cache_enabled_from_report_context(report_context.as_ref()) {
-            seed_kiro_sync_report_context_input_tokens(&plan, &mut report_context);
-        }
         seed_kiro_sync_report_context_prompt_cache_usage(state, &plan, &mut report_context).await;
     }
     let mut client_headers = headers.clone();
@@ -2364,6 +2350,10 @@ async fn execute_execution_runtime_sync_impl(
         )
         .await;
         return Ok(None);
+    }
+
+    if (200..300).contains(&status_code) {
+        commit_stable_cache_usage(state.runtime_state(), &plan, report_context.as_ref()).await;
     }
 
     let terminal_unix_secs = current_request_candidate_unix_ms();

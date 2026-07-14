@@ -3,6 +3,7 @@ use crate::handlers::admin::provider::shared::support::{
     normalize_provider_billing_type, parse_optional_rfc3339_unix_secs,
 };
 use crate::handlers::admin::provider::write::normalize::normalize_chat_pii_redaction_config;
+use crate::handlers::admin::provider::write::normalize::normalize_kiro_cache_config;
 use crate::handlers::admin::provider::write::normalize::normalize_pool_advanced_config;
 use crate::handlers::admin::provider::write::normalize::normalize_provider_type_input;
 use crate::handlers::admin::request::AdminAppState;
@@ -243,6 +244,23 @@ pub(crate) async fn build_admin_update_provider_record(
             for (key, value) in patch_map {
                 if value.is_null() {
                     config_map.remove(&key);
+                } else if key == "kiro" {
+                    let Some(patch_kiro) = value.as_object() else {
+                        return Err("config.kiro 必须是 JSON 对象".to_string());
+                    };
+                    let mut merged_kiro = config_map
+                        .get("kiro")
+                        .and_then(serde_json::Value::as_object)
+                        .cloned()
+                        .unwrap_or_default();
+                    for (kiro_key, kiro_value) in patch_kiro {
+                        if kiro_value.is_null() {
+                            merged_kiro.remove(kiro_key);
+                        } else {
+                            merged_kiro.insert(kiro_key.clone(), kiro_value.clone());
+                        }
+                    }
+                    config_map.insert(key, serde_json::Value::Object(merged_kiro));
                 } else {
                     config_map.insert(key, value);
                 }
@@ -292,6 +310,7 @@ pub(crate) async fn build_admin_update_provider_record(
             config_map.insert("chat_pii_redaction".to_string(), value);
         }
     }
+    normalize_kiro_cache_config(&mut config_map)?;
 
     updated.config = (!config_map.is_empty()).then_some(serde_json::Value::Object(config_map));
     updated.updated_at_unix_secs = SystemTime::now()

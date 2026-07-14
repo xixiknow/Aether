@@ -298,6 +298,46 @@
         </div>
 
         <div
+          v-if="form.provider_type === 'kiro' && form.kiro_simulated_cache_enabled"
+          class="grid grid-cols-1 gap-3 sm:grid-cols-2"
+        >
+          <div class="space-y-1.5">
+            <Label for="kiro-cache-target">{{ legacyT('稳态 Token 命中目标 (%)') }}</Label>
+            <Input
+              id="kiro-cache-target"
+              v-model.number="form.kiro_simulated_cache_target_percent"
+              type="number"
+              min="1"
+              max="99"
+              step="1"
+              inputmode="numeric"
+            />
+          </div>
+          <div class="space-y-1.5">
+            <Label>{{ legacyT('缓存有效期') }}</Label>
+            <Select v-model="form.kiro_simulated_cache_ttl_secs">
+              <SelectTrigger>
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem :value="300">
+                  {{ legacyT('5 分钟') }}
+                </SelectItem>
+                <SelectItem :value="3600">
+                  {{ legacyT('1 小时') }}
+                </SelectItem>
+                <SelectItem :value="21600">
+                  {{ legacyT('6 小时') }}
+                </SelectItem>
+                <SelectItem :value="86400">
+                  {{ legacyT('24 小时') }}
+                </SelectItem>
+              </SelectContent>
+            </Select>
+          </div>
+        </div>
+
+        <div
           v-if="form.provider_type === 'codex' && form.pool_mode_enabled"
           class="flex items-center justify-between p-3 border rounded-lg bg-muted/50"
         >
@@ -433,6 +473,8 @@ const form = ref({
   pool_mode_enabled: false,
   // Kiro 专属配置
   kiro_simulated_cache_enabled: false,
+  kiro_simulated_cache_target_percent: 99,
+  kiro_simulated_cache_ttl_secs: 3600,
   // Codex 专属配置
   codex_ignore_5h_window: false,
 })
@@ -463,6 +505,8 @@ function resetForm() {
     pool_mode_enabled: false,
     // Kiro 专属配置
     kiro_simulated_cache_enabled: false,
+    kiro_simulated_cache_target_percent: 99,
+    kiro_simulated_cache_ttl_secs: 3600,
     // Codex 专属配置
     codex_ignore_5h_window: false,
   }
@@ -497,6 +541,8 @@ function loadProviderData() {
     pool_mode_enabled: poolAdvanced !== null,
     // Kiro 专属配置
     kiro_simulated_cache_enabled: props.provider.kiro_simulated_cache_enabled ?? false,
+    kiro_simulated_cache_target_percent: props.provider.kiro_simulated_cache_target_percent ?? 99,
+    kiro_simulated_cache_ttl_secs: props.provider.kiro_simulated_cache_ttl_secs ?? 3600,
     // Codex 专属配置
     codex_ignore_5h_window: poolAdvanced?.codex_ignore_5h_window ?? false,
   }
@@ -519,6 +565,8 @@ watch(() => form.value.provider_type, () => {
   }
   if (form.value.provider_type !== 'kiro') {
     form.value.kiro_simulated_cache_enabled = false
+    form.value.kiro_simulated_cache_target_percent = 99
+    form.value.kiro_simulated_cache_ttl_secs = 3600
   }
   if (form.value.provider_type !== 'codex') {
     form.value.codex_ignore_5h_window = false
@@ -535,6 +583,18 @@ const handleSubmit = async () => {
   // 月卡类型必须设置周期开始时间
   if (form.value.billing_type === 'monthly_quota' && !form.value.quota_last_reset_at) {
     showError(legacyT('月卡类型必须设置周期开始时间'), legacyT('验证失败'))
+    return
+  }
+  if (
+    form.value.provider_type === 'kiro'
+    && form.value.kiro_simulated_cache_enabled
+    && (
+      !Number.isInteger(form.value.kiro_simulated_cache_target_percent)
+      || form.value.kiro_simulated_cache_target_percent < 1
+      || form.value.kiro_simulated_cache_target_percent > 99
+    )
+  ) {
+    showError(legacyT('稳态 Token 命中目标必须是 1 到 99 之间的整数'), legacyT('验证失败'))
     return
   }
 
@@ -582,6 +642,8 @@ const handleSubmit = async () => {
             config: {
               kiro: {
                 simulated_cache_enabled: form.value.kiro_simulated_cache_enabled,
+                simulated_cache_target_percent: form.value.kiro_simulated_cache_target_percent,
+                simulated_cache_ttl_secs: form.value.kiro_simulated_cache_ttl_secs,
               },
             },
           }

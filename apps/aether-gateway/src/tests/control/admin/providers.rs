@@ -241,7 +241,11 @@ async fn gateway_handles_admin_provider_summary_locally_with_trusted_admin_princ
                 "pool_advanced": {"enabled": true},
                 "failover_rules": {"strategy": "ordered"},
                 "chat_pii_redaction": {"enabled": true},
-                "kiro": {"simulated_cache_enabled": true},
+                "kiro": {
+                    "simulated_cache_enabled": true,
+                    "simulated_cache_target_percent": 97,
+                    "simulated_cache_ttl_secs": 21600
+                },
                 "provider_ops": {"architecture_id": "anyrouter"}
             })),
         );
@@ -355,6 +359,8 @@ async fn gateway_handles_admin_provider_summary_locally_with_trusted_admin_princ
     assert_eq!(payload["ops_architecture_id"], "anyrouter");
     assert_eq!(payload["chat_pii_redaction"], json!({"enabled": true}));
     assert_eq!(payload["kiro_simulated_cache_enabled"], true);
+    assert_eq!(payload["kiro_simulated_cache_target_percent"], 97);
+    assert_eq!(payload["kiro_simulated_cache_ttl_secs"], 21600);
     assert_eq!(payload["created_at"], "2024-03-21T05:46:40Z");
     assert_eq!(payload["updated_at"], "2024-03-21T05:48:20Z");
     assert_eq!(

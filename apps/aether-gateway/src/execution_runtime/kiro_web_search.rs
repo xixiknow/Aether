@@ -15,10 +15,11 @@ use tracing::{debug, warn};
 use uuid::Uuid;
 
 use crate::execution_runtime::kiro_cache::{
-    billed_input_tokens, build_kiro_prompt_cache_profile_with_auto_inject,
-    compute_kiro_prompt_cache_usage, estimate_kiro_prompt_input_tokens,
-    kiro_auto_cache_breakpoints_from_report_context, kiro_cache_credential_id,
-    kiro_simulated_cache_enabled_from_provider_config, KiroPromptCacheProfile, KiroPromptCacheUsage,
+    billed_input_tokens, estimate_kiro_prompt_input_tokens, KiroPromptCacheUsage,
+};
+use crate::execution_runtime::kiro_cache_v2::{
+    probe_and_seed_stable_cache_usage, seed_stable_cache_policy_context,
+    stable_cache_policy_from_provider_config, KiroStableCachePolicy,
 };
 use crate::execution_runtime::ndjson::encode_stream_frame_ndjson;
 use crate::execution_runtime::transport::{
@@ -40,7 +41,6 @@ struct KiroWebSearchRequest {
     query: String,
     model: String,
     input_tokens: u64,
-    cache_profile: Option<KiroPromptCacheProfile>,
 }
 
 #[derive(Debug, Serialize)]
@@ -160,30 +160,28 @@ pub(crate) async fn maybe_execute_kiro_web_search_stream(
     }
 
     let search_results = parse_mcp_search_results(&mcp_execution.result);
-    let cache_usage = if kiro_simulated_cache_enabled(state, plan).await {
-        match request.cache_profile.as_ref() {
-            Some(profile) => {
-                let credential_id = kiro_cache_credential_id(
-                    report_context.and_then(Value::as_object),
-                    kiro_web_search_account_credential_id(plan),
-                );
-                compute_kiro_prompt_cache_usage(state.runtime_state(), credential_id, profile).await
-            }
-            None => KiroPromptCacheUsage::default(),
-        }
-    } else {
-        KiroPromptCacheUsage::default()
-    };
+    let mut cache_context = report_context.cloned();
+    let policy = kiro_simulated_cache_policy(state, plan).await;
+    seed_stable_cache_policy_context(&mut cache_context, policy);
+    let cache_usage =
+        probe_and_seed_stable_cache_usage(state.runtime_state(), plan, &mut cache_context)
+            .await
+            .unwrap_or_default();
+    let input_tokens = cache_context
+        .as_ref()
+        .and_then(|context| context.get("input_tokens"))
+        .and_then(Value::as_u64)
+        .unwrap_or(request.input_tokens);
     let sse_body = build_web_search_sse_body(
         request.model.as_str(),
         request.query.as_str(),
         tool_use_id.as_str(),
         search_results,
-        request.input_tokens,
+        input_tokens,
         cache_usage,
     )
     .map_err(ExecutionRuntimeTransportError::BodyEncode)?;
-    let mut synthetic_context = synthetic_report_context(report_context, mcp_execution.url);
+    let mut synthetic_context = synthetic_report_context(cache_context.as_ref(), mcp_execution.url);
     if let Some(context) = synthetic_context.as_mut().and_then(Value::as_object_mut) {
         context.insert("kiro_web_search_mcp".to_string(), Value::Bool(true));
     }
@@ -194,7 +192,10 @@ pub(crate) async fn maybe_execute_kiro_web_search_stream(
     }))
 }
 
-async fn kiro_simulated_cache_enabled(state: &AppState, plan: &ExecutionPlan) -> bool {
+async fn kiro_simulated_cache_policy(
+    state: &AppState,
+    plan: &ExecutionPlan,
+) -> KiroStableCachePolicy {
     // Gate on provider_type (read below), NOT provider_name. Production plans carry the
     // provider display name (e.g. "kiro-pool") in provider_name, never the literal "Kiro",
     // so a name check here rejected every real request and the simulated cache never ran.
@@ -206,9 +207,8 @@ async fn kiro_simulated_cache_enabled(state: &AppState, plan: &ExecutionPlan) ->
             .iter()
             .find(|provider| provider.id == plan.provider_id)
             .filter(|provider| provider.provider_type.eq_ignore_ascii_case("kiro"))
-            .is_some_and(|provider| {
-                kiro_simulated_cache_enabled_from_provider_config(provider.config.as_ref())
-            }),
+            .map(|provider| stable_cache_policy_from_provider_config(provider.config.as_ref()))
+            .unwrap_or_default(),
         Err(err) => {
             warn!(
                 event_name = "kiro_simulated_cache_config_read_failed",
@@ -218,7 +218,7 @@ async fn kiro_simulated_cache_enabled(state: &AppState, plan: &ExecutionPlan) ->
                 error = ?err,
                 "failed to read Kiro simulated cache provider config; defaulting disabled"
             );
-            false
+            KiroStableCachePolicy::default()
         }
     }
 }
@@ -792,16 +792,10 @@ fn detect_kiro_web_search_request(
                 .unwrap_or("claude")
                 .to_string();
             let input_tokens = estimate_input_tokens(original);
-            let auto_inject = kiro_auto_cache_breakpoints_from_report_context(report_context);
             return Some(KiroWebSearchRequest {
                 query,
                 model,
                 input_tokens,
-                cache_profile: build_kiro_prompt_cache_profile_with_auto_inject(
-                    original,
-                    input_tokens,
-                    auto_inject,
-                ),
             });
         }
     }
@@ -849,7 +843,6 @@ fn detect_kiro_web_search_from_envelope(plan: &ExecutionPlan) -> Option<KiroWebS
         query,
         model,
         input_tokens: estimate_input_tokens(body),
-        cache_profile: None,
     })
 }
 
@@ -989,10 +982,6 @@ fn execution_result_body_json(result: &ExecutionResult) -> Option<Value> {
         .decode(body)
         .ok()?;
     serde_json::from_slice(&bytes).ok()
-}
-
-fn kiro_web_search_account_credential_id(plan: &ExecutionPlan) -> String {
-    format!("{}:{}:{}", plan.provider_id, plan.endpoint_id, plan.key_id)
 }
 
 fn build_web_search_sse_body(
