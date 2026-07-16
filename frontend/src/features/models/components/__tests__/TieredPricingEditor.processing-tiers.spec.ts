@@ -1,5 +1,13 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { createApp, defineComponent, h, nextTick, type App, type ComponentPublicInstance } from 'vue'
+import {
+  createApp,
+  defineComponent,
+  h,
+  nextTick,
+  shallowRef,
+  type App,
+  type ComponentPublicInstance,
+} from 'vue'
 
 import type { TieredPricingConfig } from '@/api/endpoints/types'
 import TieredPricingEditor from '../TieredPricingEditor.vue'
@@ -14,6 +22,7 @@ const mountedApps: Array<{ app: App, root: HTMLElement }> = []
 function mountEditor(
   modelValue: TieredPricingConfig,
   options: {
+    autoFillMissingCachePrices?: boolean
     showCache1h?: boolean
     showImagePricing?: boolean
     showTokenPricing?: boolean
@@ -23,6 +32,7 @@ function mountEditor(
   const root = document.createElement('div')
   document.body.appendChild(root)
   const onUpdate = vi.fn()
+  const currentModelValue = shallowRef(modelValue)
   let editor: TieredPricingEditorExposed | null = null
 
   const app = createApp(defineComponent({
@@ -31,7 +41,8 @@ function mountEditor(
         ref: (instance: unknown) => {
           editor = instance as TieredPricingEditorExposed | null
         },
-        modelValue,
+        modelValue: currentModelValue.value,
+        autoFillMissingCachePrices: options.autoFillMissingCachePrices,
         showCache1h: options.showCache1h,
         showImagePricing: options.showImagePricing,
         showTokenPricing: options.showTokenPricing,
@@ -47,6 +58,9 @@ function mountEditor(
   return {
     root,
     onUpdate,
+    setModelValue: (value: TieredPricingConfig) => {
+      currentModelValue.value = value
+    },
     getFinalPricing: () => {
       if (!editor) throw new Error('TieredPricingEditor ref was not mounted')
       return editor.getFinalPricing()
@@ -278,6 +292,148 @@ describe('TieredPricingEditor processing tiers', () => {
     const result = getFinalPricing()
     expect(result.tiers[0].cache_creation_price_per_1m).toBe(6.25)
     expect(result.processing_tiers?.priority.tiers?.[0].cache_creation_price_per_1m).toBe(20)
+  })
+
+  it('keeps absent cache prices empty and absent when automatic cache filling is disabled', () => {
+    const pricing = {
+      tiers: [{ up_to: null, input_price_per_1m: 5, output_price_per_1m: 30 }],
+    } as TieredPricingConfig
+    const { root, getFinalPricing } = mountEditor(pricing, {
+      autoFillMissingCachePrices: false,
+    })
+
+    const creation = root.querySelector(
+      'input[aria-label="Standard 阶梯 1 缓存创建倍率"]',
+    ) as HTMLInputElement
+    const read = root.querySelector(
+      'input[aria-label="Standard 阶梯 1 缓存读取倍率"]',
+    ) as HTMLInputElement
+
+    expect(creation.value).toBe('')
+    expect(read.value).toBe('')
+    expect(getFinalPricing().tiers).toEqual([
+      { up_to: null, input_price_per_1m: 5, output_price_per_1m: 30 },
+    ])
+  })
+
+  it('preserves only the explicitly supplied side of cache pricing when automatic filling is disabled', () => {
+    const pricing = {
+      tiers: [
+        {
+          up_to: 128_000,
+          input_price_per_1m: 5,
+          output_price_per_1m: 30,
+          cache_creation_price_per_1m: 6.25,
+        },
+        {
+          up_to: null,
+          input_price_per_1m: 7,
+          output_price_per_1m: 42,
+          cache_read_price_per_1m: 0.7,
+        },
+      ],
+    } as TieredPricingConfig
+    const { root, getFinalPricing } = mountEditor(pricing, {
+      autoFillMissingCachePrices: false,
+    })
+
+    const creationValues = [...root.querySelectorAll<HTMLInputElement>(
+      'input[aria-label*="缓存创建倍率"]',
+    )].map(input => input.value)
+    const readValues = [...root.querySelectorAll<HTMLInputElement>(
+      'input[aria-label*="缓存读取倍率"]',
+    )].map(input => input.value)
+
+    expect(creationValues).toEqual(['1.25', ''])
+    expect(readValues).toEqual(['', '0.1'])
+    expect(getFinalPricing().tiers).toEqual(pricing.tiers)
+  })
+
+  it('adds and removes only the cache price edited by the user when automatic filling is disabled', async () => {
+    const pricing = {
+      tiers: [{ up_to: null, input_price_per_1m: 5, output_price_per_1m: 30 }],
+    } as TieredPricingConfig
+    const { root, getFinalPricing } = mountEditor(pricing, {
+      autoFillMissingCachePrices: false,
+    })
+    const read = root.querySelector(
+      'input[aria-label="Standard 阶梯 1 缓存读取倍率"]',
+    ) as HTMLInputElement
+
+    read.value = '0.2'
+    read.dispatchEvent(new Event('input', { bubbles: true }))
+    await nextTick()
+
+    expect(getFinalPricing().tiers).toEqual([{
+      up_to: null,
+      input_price_per_1m: 5,
+      output_price_per_1m: 30,
+      cache_read_price_per_1m: 1,
+    }])
+
+    read.value = ''
+    read.dispatchEvent(new Event('input', { bubbles: true }))
+    await nextTick()
+
+    expect(getFinalPricing().tiers).toEqual([{
+      up_to: null,
+      input_price_per_1m: 5,
+      output_price_per_1m: 30,
+    }])
+  })
+
+  it('does not turn absent cache prices into zero when switching editor modes', async () => {
+    const pricing = {
+      tiers: [{ up_to: null, input_price_per_1m: 5, output_price_per_1m: 30 }],
+    } as TieredPricingConfig
+    const { root, getFinalPricing } = mountEditor(pricing, {
+      autoFillMissingCachePrices: false,
+    })
+
+    click(root.querySelector(
+      'button[aria-label="Standard 阶梯 1 切换缓存价格输入方式"]',
+    ))
+    await nextTick()
+
+    expect((root.querySelector(
+      'input[aria-label="Standard 阶梯 1 缓存创建价格"]',
+    ) as HTMLInputElement).value).toBe('')
+    expect((root.querySelector(
+      'input[aria-label="Standard 阶梯 1 缓存读取价格"]',
+    ) as HTMLInputElement).value).toBe('')
+    expect(getFinalPricing().tiers).toEqual(pricing.tiers)
+  })
+
+  it('rebuilds when an external model later matches an older emitted value', async () => {
+    const pricing = {
+      tiers: [{ up_to: null, input_price_per_1m: 5, output_price_per_1m: 30 }],
+    } as TieredPricingConfig
+    const { root, onUpdate, setModelValue } = mountEditor(pricing, {
+      autoFillMissingCachePrices: false,
+    })
+    const read = root.querySelector(
+      'input[aria-label="Standard 阶梯 1 缓存读取倍率"]',
+    ) as HTMLInputElement
+
+    read.value = '0.2'
+    read.dispatchEvent(new Event('input', { bubbles: true }))
+    await nextTick()
+    const olderEmittedValue = onUpdate.mock.lastCall?.[0] as TieredPricingConfig
+
+    setModelValue({
+      tiers: [{ up_to: null, input_price_per_1m: 7, output_price_per_1m: 42 }],
+    })
+    await nextTick()
+    expect((root.querySelector('[data-testid="tier-input-price"]') as HTMLInputElement).value)
+      .toBe('7')
+
+    setModelValue(olderEmittedValue)
+    await nextTick()
+    expect((root.querySelector('[data-testid="tier-input-price"]') as HTMLInputElement).value)
+      .toBe('5')
+    expect((root.querySelector(
+      'input[aria-label="Standard 阶梯 1 缓存读取倍率"]',
+    ) as HTMLInputElement).value).toBe('0.2')
   })
 
   it('keeps processing image catalogs editable when token controls are hidden', async () => {
