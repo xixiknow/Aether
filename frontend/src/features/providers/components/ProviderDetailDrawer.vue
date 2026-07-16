@@ -2443,8 +2443,8 @@ function shouldAutoRefreshCodexQuota(): boolean {
 
     if (isTokenExpiringSoon(key, now)) return true
 
-    // 只要有一个活跃 key 没有配额数据，就刷新一次
-    if (!hasCodexQuotaDisplayData(key)) {
+    // 旧缓存可能已有普通配额但没有 reset-credit 数据，仍需补拉一次
+    if (!hasCodexQuotaDisplayData(key) || getCodexResetCreditAvailableCount(key) === null) {
       return true
     }
     // 配额数据超过 5 分钟未更新，也触发刷新
