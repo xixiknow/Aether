@@ -279,7 +279,7 @@
                         </div>
                       </div>
                       <div
-                        v-if="getCodexResetCreditsDisplay(key)"
+                        v-if="getCodexResetCreditAvailableCount(key) !== null"
                         class="mt-3 border-t border-border/60 pt-2"
                       >
                         <div class="flex flex-wrap items-center gap-x-1 gap-y-1 text-[10px] leading-4 text-muted-foreground">
@@ -1014,6 +1014,7 @@ import {
 } from '@/utils/providerKeyStatus'
 import { getGeminiCliAccountCreditsText } from '@/utils/providerKeyQuota'
 import {
+  createCodexResetCreditIdempotencyKey,
   formatCodexResetCreditCount as formatCodexResetCreditCountLabel,
   formatCodexResetCreditDays,
   getCodexResetCreditAvailableCount as getCodexResetCreditAvailableCountFromSnapshot,
@@ -1668,13 +1669,6 @@ async function handleClearOAuthInvalid(key: EndpointAPIKey) {
   } finally {
     clearingOAuthInvalidKeyId.value = null
   }
-}
-
-function createCodexResetCreditIdempotencyKey(): string {
-  if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
-    return crypto.randomUUID()
-  }
-  throw new Error('浏览器不支持 crypto.randomUUID，无法生成安全幂等 ID')
 }
 
 function codexResetCreditOutcomeFeedback(

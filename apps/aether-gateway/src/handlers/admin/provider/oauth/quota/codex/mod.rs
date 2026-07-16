@@ -51,14 +51,6 @@ fn merge_codex_quota_metadata(
     serde_json::Value::Object(merged)
 }
 
-fn codex_reset_credits_available_count(metadata: &Map<String, Value>) -> Option<u64> {
-    metadata
-        .get("reset_credits")
-        .and_then(Value::as_object)
-        .and_then(|reset_credits| reset_credits.get("available_count"))
-        .and_then(aether_admin::provider::quota::coerce_json_u64)
-}
-
 fn truncate_codex_reset_credit_detail_error(message: impl Into<String>) -> String {
     let message = message.into();
     let mut sanitized = message.replace('\n', " ");
@@ -85,11 +77,7 @@ fn merge_codex_reset_credit_detail_metadata(
         .cloned()
         .unwrap_or_default();
 
-    let has_usage_available_count = reset_credits.contains_key("available_count");
     for (key, value) in detail_reset_credits {
-        if key == "available_count" && has_usage_available_count {
-            continue;
-        }
         reset_credits.insert(key.clone(), value.clone());
     }
     codex_metadata.insert("reset_credits".to_string(), Value::Object(reset_credits));
@@ -124,11 +112,6 @@ async fn enrich_codex_reset_credit_details(
     codex_metadata: &mut Map<String, Value>,
     now_unix_secs: u64,
 ) -> Result<(), GatewayError> {
-    let available_count = codex_reset_credits_available_count(codex_metadata).unwrap_or(0);
-    if available_count == 0 {
-        return Ok(());
-    }
-
     let request_spec = match build_codex_reset_credits_request_spec(transport, resolved_oauth_auth)
     {
         Ok(request_spec) => request_spec,
@@ -775,4 +758,38 @@ pub(crate) async fn refresh_codex_provider_quota_locally(
         "refresh_failed_retained": refresh_failed_retained_count,
         "auto_removed_hard_banned": auto_removed_hard_banned_count,
     })))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn codex_reset_credit_detail_count_overrides_usage_count() {
+        let mut metadata = json!({
+            "reset_credits": {
+                "available_count": 0,
+                "detail_source": "wham_usage"
+            }
+        })
+        .as_object()
+        .cloned()
+        .expect("metadata object");
+        let detail = json!({
+            "reset_credits": {
+                "available_count": 2,
+                "detail_source": "wham_readonly"
+            }
+        });
+
+        merge_codex_reset_credit_detail_metadata(&mut metadata, &detail);
+
+        assert_eq!(
+            metadata
+                .get("reset_credits")
+                .and_then(Value::as_object)
+                .and_then(|credits| credits.get("available_count")),
+            Some(&json!(2u64))
+        );
+    }
 }
