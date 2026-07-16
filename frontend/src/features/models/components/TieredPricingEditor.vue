@@ -481,9 +481,11 @@ const props = withDefaults(defineProps<{
   showCache1h?: boolean
   showImagePricing?: boolean
   showImageEditor?: boolean
+  autoFillMissingCachePrices?: boolean
 }>(), {
   showTokenPricing: true,
   showImageEditor: true,
+  autoFillMissingCachePrices: true,
 })
 const emit = defineEmits<{
   'update:modelValue': [value: TieredPricingConfig | null]
@@ -508,6 +510,7 @@ const activePricingScope = ref(STANDARD_PRICING_SCOPE)
 const processingTierKeysEdited = ref(false)
 const originalEmptyProcessingTiers = ref<'absent' | 'null' | 'object'>('absent')
 const lastEmittedPricingJson = ref<string>('')
+let initializedAutoFillMissingCachePrices: boolean | undefined
 let imageOutputPriceRowId = 0
 let imageOutputPriceRangeRowId = 0
 
@@ -608,11 +611,17 @@ const customInputValue = reactive<Record<number, string>>({})
 
 // 初始化
 watch(
-  () => props.modelValue,
-  (newValue) => {
-    if (lastEmittedPricingJson.value && JSON.stringify(newValue ?? null) === lastEmittedPricingJson.value) {
+  [() => props.modelValue, () => props.autoFillMissingCachePrices],
+  ([newValue, autoFillMissingCachePrices]) => {
+    if (
+      initializedAutoFillMissingCachePrices === autoFillMissingCachePrices
+      && lastEmittedPricingJson.value
+      && JSON.stringify(newValue ?? null) === lastEmittedPricingJson.value
+    ) {
       return
     }
+    lastEmittedPricingJson.value = ''
+    initializedAutoFillMissingCachePrices = autoFillMissingCachePrices
     if (newValue?.tiers) {
       const clonedValue = cloneJson(newValue)
       basePricingConfig.value = clonedValue
@@ -726,17 +735,26 @@ function initializeScopeCacheState(scope: string, tiers: PricingTier[]) {
 
 function createCacheMultiplierDraft(tier: PricingTier): CacheMultiplierDraft {
   return {
-    creation: String(cacheMultiplierFromPrice(
+    creation: createCacheMultiplierDraftValue(
       tier.input_price_per_1m,
       tier.cache_creation_price_per_1m,
       1.25,
-    )),
-    read: String(cacheMultiplierFromPrice(
+    ),
+    read: createCacheMultiplierDraftValue(
       tier.input_price_per_1m,
       tier.cache_read_price_per_1m,
       0.1,
-    )),
+    ),
   }
+}
+
+function createCacheMultiplierDraftValue(
+  inputPrice: number,
+  cachePrice: number | undefined,
+  fallback: number,
+): string {
+  if (cachePrice == null && !props.autoFillMissingCachePrices) return ''
+  return String(cacheMultiplierFromPrice(inputPrice, cachePrice, fallback))
 }
 
 function getCachePriceMode(index: number): CachePriceMode {
@@ -756,10 +774,19 @@ function toggleCachePriceMode(index: number) {
   const tier = localTiers.value[index]
   const modes = cachePriceModes.value
   const drafts = cacheMultiplierDrafts.value
+  const manualState = requireActiveCacheManualState()
   if (!tier || !modes || !drafts) return
   if (getCachePriceMode(index) === 'multiplier') {
-    tier.cache_creation_price_per_1m = getResolvedCacheCreationPrice(index)
-    tier.cache_read_price_per_1m = getResolvedCacheReadPrice(index)
+    if (props.autoFillMissingCachePrices || manualState[index]?.creation) {
+      tier.cache_creation_price_per_1m = getResolvedCacheCreationPrice(index)
+    } else {
+      delete tier.cache_creation_price_per_1m
+    }
+    if (props.autoFillMissingCachePrices || manualState[index]?.read) {
+      tier.cache_read_price_per_1m = getResolvedCacheReadPrice(index)
+    } else {
+      delete tier.cache_read_price_per_1m
+    }
     modes[index] = 'price'
   } else {
     drafts[index] = createCacheMultiplierDraft(tier)
@@ -1176,18 +1203,26 @@ function buildTiersForScope(scope: string, includeAutomaticCache: boolean): Pric
     const tier = cloneJson(sourceTier)
     const state = manualState[index]
 
-    tier.cache_creation_price_per_1m = resolveCachePriceForScope(
-      scope,
-      index,
-      sourceTier,
-      'creation',
-    )
-    tier.cache_read_price_per_1m = resolveCachePriceForScope(
-      scope,
-      index,
-      sourceTier,
-      'read',
-    )
+    if (props.autoFillMissingCachePrices || state?.creation) {
+      tier.cache_creation_price_per_1m = resolveCachePriceForScope(
+        scope,
+        index,
+        sourceTier,
+        'creation',
+      )
+    } else {
+      delete tier.cache_creation_price_per_1m
+    }
+    if (props.autoFillMissingCachePrices || state?.read) {
+      tier.cache_read_price_per_1m = resolveCachePriceForScope(
+        scope,
+        index,
+        sourceTier,
+        'read',
+      )
+    } else {
+      delete tier.cache_read_price_per_1m
+    }
 
     if (props.showCache1h) {
       if (state?.cache1h && sourceTier.cache_ttl_pricing?.length) {
@@ -1479,23 +1514,33 @@ function confirmCustomInput(index: number) {
 }
 
 function updateCacheCreation(index: number, value: string | number) {
+  const manualState = requireActiveCacheManualState()
+  const hasValue = value !== '' && value !== null && value !== undefined
+  manualState[index] = { ...manualState[index], creation: hasValue }
   if (getCachePriceMode(index) === 'multiplier') {
     getCacheMultiplierDraft(index).creation = String(value ?? '')
   } else {
-    localTiers.value[index].cache_creation_price_per_1m = value === ''
-      ? undefined
-      : parseFloatInput(value)
+    if (hasValue) {
+      localTiers.value[index].cache_creation_price_per_1m = parseFloatInput(value)
+    } else {
+      delete localTiers.value[index].cache_creation_price_per_1m
+    }
   }
   syncToParent()
 }
 
 function updateCacheRead(index: number, value: string | number) {
+  const manualState = requireActiveCacheManualState()
+  const hasValue = value !== '' && value !== null && value !== undefined
+  manualState[index] = { ...manualState[index], read: hasValue }
   if (getCachePriceMode(index) === 'multiplier') {
     getCacheMultiplierDraft(index).read = String(value ?? '')
   } else {
-    localTiers.value[index].cache_read_price_per_1m = value === ''
-      ? undefined
-      : parseFloatInput(value)
+    if (hasValue) {
+      localTiers.value[index].cache_read_price_per_1m = parseFloatInput(value)
+    } else {
+      delete localTiers.value[index].cache_read_price_per_1m
+    }
   }
   syncToParent()
 }

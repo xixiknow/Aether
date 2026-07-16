@@ -394,6 +394,7 @@
                 ref="tieredPricingEditorRef"
                 v-model="tieredPricing"
                 class="mt-3"
+                :auto-fill-missing-cache-prices="autoFillMissingCachePrices"
                 :show-token-pricing="billingMode === 'token'"
                 :show-image-pricing="isImageGenerationEnabled"
                 :show-image-editor="billingMode === 'image'"
@@ -601,6 +602,7 @@ import {
   EMBEDDING_API_FORMATS,
   buildGlobalModelCreatePayload,
   buildGlobalModelUpdatePayload,
+  cloneTieredPricingConfig,
 } from './global-model-form-helpers'
 import { tieredPricingHasImageOutputPricing } from '../utils/tiered-pricing'
 
@@ -779,6 +781,7 @@ function enterManualEntryMode() {
 }
 
 function reopenPresetPanel() {
+  clearSelection()
   presetPanelCollapsed.value = false
 }
 
@@ -1067,8 +1070,6 @@ function selectModel(model: ModelsDevModelItem) {
   imageGenerationExplicitOverride.value = null
   selectedModel.value = model
   expandedProvider.value = model.providerId
-  form.value.name = model.modelId
-  form.value.display_name = model.modelName
 
   // 构建 config
   const config: Record<string, unknown> = {
@@ -1088,11 +1089,16 @@ function selectModel(model: ModelsDevModelItem) {
   if (model.releaseDate) config.release_date = model.releaseDate
   if (model.inputModalities?.length) config.input_modalities = model.inputModalities
   if (model.outputModalities?.length) config.output_modalities = model.outputModalities
-  form.value.config = config
   const supportedCapabilities = new Set<string>()
   if (model.supportsEmbedding) supportedCapabilities.add('embedding')
   if (model.outputModalities?.includes('image')) supportedCapabilities.add('image_generation')
-  form.value.supported_capabilities = [...supportedCapabilities]
+  form.value = {
+    ...defaultForm(),
+    name: model.modelId,
+    display_name: model.modelName,
+    config,
+    supported_capabilities: [...supportedCapabilities],
+  }
   if (model.supportsEmbedding) {
     setEmbeddingEnabled(true)
   }
@@ -1106,7 +1112,7 @@ function selectModel(model: ModelsDevModelItem) {
   loadVideoPricingFromConfig()
 
   tieredPricing.value = model.tieredPricing
-    ? structuredClone(model.tieredPricing)
+    ? cloneTieredPricingConfig(model.tieredPricing)
     : null
 
   presetPanelCollapsed.value = true
@@ -1119,6 +1125,7 @@ function clearSelection() {
   selectedModel.value = null
   form.value = defaultForm()
   tieredPricing.value = null
+  videoResolutionPrices.value = []
   billingMode.value = 'token'
 }
 
@@ -1190,6 +1197,10 @@ const { isEditMode, handleDialogUpdate, handleCancel } = useFormDialog({
   loadData: loadModelData,
   resetForm,
 })
+
+const autoFillMissingCachePrices = computed(() => (
+  !isEditMode.value && selectedModel.value === null
+))
 
 async function handleSubmit() {
   if (!form.value.name || !form.value.display_name) {

@@ -45,6 +45,8 @@ export interface UsageStats {
   total_cost: number
   total_actual_cost?: number
   avg_response_time: number
+  error_count?: number
+  error_rate?: number
   today?: {
     requests: number
     tokens: number
