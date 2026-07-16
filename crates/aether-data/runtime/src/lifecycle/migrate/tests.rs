@@ -325,6 +325,7 @@ fn empty_database_snapshot_covers_current_cutoff_versions() {
             20260715000000,
             20260715130000,
             20260715130100,
+            20260716000000,
         ]
     );
 }
@@ -1577,6 +1578,7 @@ fn pending_migrations_from_applied_skips_versions_already_applied() {
             20260715000000,
             20260715130000,
             20260715130100,
+            20260716000000,
         ]
     );
 }
@@ -2117,6 +2119,210 @@ async fn prepare_database_for_startup_bootstraps_clean_database() {
             .expect("baseline migrations should resolve")
             .len() as i64
     );
+}
+
+#[tokio::test]
+async fn postgres_usage_billing_facts_total_tokens_counts_cached_input_once() {
+    const LEGACY_VIEW_MIGRATION_VERSION: i64 = 20260505130000;
+    const FIX_MIGRATION_VERSION: i64 = 20260716000000;
+
+    let Some(server) = ManagedPostgresServer::try_start()
+        .await
+        .expect("postgres billing-facts migration test should start or skip")
+    else {
+        return;
+    };
+
+    let pool = PgPool::connect(server.database_url())
+        .await
+        .expect("pool should connect");
+    let pending = prepare_database_for_startup(&pool)
+        .await
+        .expect("clean database bootstrap should succeed");
+    assert!(pending.is_empty());
+
+    let legacy_view_migration = POSTGRES_MIGRATOR
+        .iter()
+        .find(|migration| migration.version == LEGACY_VIEW_MIGRATION_VERSION)
+        .expect("legacy billing-facts view migration should be embedded");
+    assert!(POSTGRES_MIGRATOR
+        .iter()
+        .any(|migration| migration.version == FIX_MIGRATION_VERSION));
+
+    query(
+        r#"
+INSERT INTO public."usage" (
+  id,
+  request_id,
+  api_key_id,
+  provider_name,
+  model,
+  api_format,
+  endpoint_api_format,
+  input_tokens,
+  output_tokens,
+  cache_creation_input_tokens,
+  cache_read_input_tokens,
+  total_tokens,
+  status,
+  billing_status
+) VALUES
+  (
+    'billing-facts-cache-read',
+    'billing-facts-cache-read',
+    'billing-facts-api-key',
+    'openai',
+    'gpt-5',
+    'openai:chat',
+    'openai:chat',
+    166103,
+    94,
+    0,
+    164608,
+    999999,
+    'completed',
+    'settled'
+  ),
+  (
+    'billing-facts-cache-create',
+    'billing-facts-cache-create',
+    'billing-facts-api-key',
+    'openai',
+    'gpt-5',
+    'openai:chat',
+    'openai:chat',
+    1000,
+    20,
+    100,
+    400,
+    999999,
+    'completed',
+    'settled'
+  ),
+  (
+    'billing-facts-legacy',
+    'billing-facts-legacy',
+    'billing-facts-legacy-api-key',
+    'legacy',
+    'legacy-model',
+    NULL,
+    NULL,
+    50,
+    27,
+    0,
+    0,
+    77,
+    'completed',
+    'settled'
+  )
+"#,
+    )
+    .execute(&pool)
+    .await
+    .expect("usage fixtures should be inserted");
+
+    query(
+        r#"
+INSERT INTO public.usage_settlement_snapshots (
+  request_id,
+  billing_status,
+  billing_input_tokens,
+  billing_effective_input_tokens,
+  billing_output_tokens,
+  billing_cache_creation_tokens,
+  billing_cache_read_tokens,
+  billing_total_input_context
+) VALUES
+  (
+    'billing-facts-cache-read',
+    'settled',
+    166103,
+    1495,
+    94,
+    0,
+    164608,
+    166103
+  ),
+  (
+    'billing-facts-cache-create',
+    'settled',
+    1000,
+    500,
+    20,
+    100,
+    400,
+    900
+  )
+"#,
+    )
+    .execute(&pool)
+    .await
+    .expect("settlement fixtures should be inserted");
+
+    sqlx::raw_sql(legacy_view_migration.sql.as_ref())
+        .execute(&pool)
+        .await
+        .expect("legacy billing-facts view should be restored for the upgrade fixture");
+    let duplicated_total: i64 = query_scalar(
+        "SELECT total_tokens FROM public.usage_billing_facts WHERE request_id = 'billing-facts-cache-read'",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("legacy billing-facts total should be readable");
+    assert_eq!(duplicated_total, 330805);
+
+    query("DELETE FROM public._sqlx_migrations WHERE version = $1")
+        .bind(FIX_MIGRATION_VERSION)
+        .execute(&pool)
+        .await
+        .expect("billing-facts fix migration stamp should be reset");
+    super::run_migrations(&pool)
+        .await
+        .expect("billing-facts fix migration should rebuild the view");
+
+    let cache_read_facts: (i64, i64, i64, i64, i64) = sqlx::query_as(
+        r#"
+SELECT
+  effective_input_tokens,
+  cache_creation_input_tokens,
+  cache_read_input_tokens,
+  total_input_context,
+  total_tokens
+FROM public.usage_billing_facts
+WHERE request_id = 'billing-facts-cache-read'
+"#,
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("canonical cache-read billing facts should be readable");
+    assert_eq!(cache_read_facts, (1495, 0, 164608, 166103, 166197));
+
+    let cache_creation_facts: (i64, i64) = sqlx::query_as(
+        r#"
+SELECT total_input_context, total_tokens
+FROM public.usage_billing_facts
+WHERE request_id = 'billing-facts-cache-create'
+"#,
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("canonical cache-creation billing facts should be readable");
+    assert_eq!(cache_creation_facts, (1000, 1020));
+
+    let legacy_total: i64 = query_scalar(
+        "SELECT total_tokens FROM public.usage_billing_facts WHERE request_id = 'billing-facts-legacy'",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("legacy billing-facts total should be readable");
+    assert_eq!(legacy_total, 77);
+
+    let repository = aether_data_postgres::SqlxUsageReadRepository::new(pool.clone());
+    let totals = repository
+        .summarize_total_tokens_by_api_key_ids(&["billing-facts-api-key".to_string()])
+        .await
+        .expect("API-key totals should use canonical billing facts");
+    assert_eq!(totals.get("billing-facts-api-key"), Some(&167217));
 }
 
 #[tokio::test]

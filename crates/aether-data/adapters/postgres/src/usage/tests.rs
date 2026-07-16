@@ -7,11 +7,11 @@ use super::{
     inflate_usage_json_value, prepare_request_metadata_for_body_storage,
     prepare_usage_body_storage, resolved_read_usage_body_ref, resolved_write_usage_body_ref,
     split_dashboard_daily_aggregate_range, split_dashboard_hourly_aggregate_range,
-    usage_body_capture_state_for_storage, usage_body_ref, usage_http_audit_body_refs,
-    usage_http_audit_capture_mode, usage_routing_snapshot_from_usage,
-    usage_settlement_pricing_snapshot_from_usage, AggregateRangeSplit, SqlxUsageReadRepository,
-    UsageHttpAuditRefs, UsageRoutingSnapshot, UsageSettlementPricingSnapshot,
-    MAX_INLINE_USAGE_BODY_BYTES,
+    usage_body_capture_state_for_storage, usage_body_ref, usage_effective_input_tokens,
+    usage_http_audit_body_refs, usage_http_audit_capture_mode, usage_routing_snapshot_from_usage,
+    usage_settlement_pricing_snapshot_from_usage, usage_total_input_context, AggregateRangeSplit,
+    SqlxUsageReadRepository, UsageHttpAuditRefs, UsageRoutingSnapshot,
+    UsageSettlementPricingSnapshot, MAX_INLINE_USAGE_BODY_BYTES,
 };
 use crate::{PostgresPoolConfig, PostgresPoolFactory};
 use aether_data_contracts::repository::usage::{
@@ -600,8 +600,25 @@ fn usage_sql_does_not_require_updated_at_column() {
 
 #[test]
 fn usage_sql_summarizes_tokens_by_api_key_ids_in_database() {
-    assert!(super::SUMMARIZE_TOTAL_TOKENS_BY_API_KEY_IDS_SQL.contains("GROUP BY api_key_id"));
-    assert!(super::SUMMARIZE_TOTAL_TOKENS_BY_API_KEY_IDS_SQL.contains("ANY($1::TEXT[])"));
+    let sql = super::SUMMARIZE_TOTAL_TOKENS_BY_API_KEY_IDS_SQL;
+    assert!(sql.contains("GROUP BY api_key_id"));
+    assert!(sql.contains("ANY($1::TEXT[])"));
+    assert!(sql.contains("GREATEST(COALESCE(total_tokens, 0), 0)"));
+    assert!(sql.contains(")::BIGINT AS total_tokens"));
+    assert!(!sql.contains("COALESCE(input_tokens, 0) + COALESCE(output_tokens, 0)"));
+
+    let source = include_str!("mod.rs");
+    let implementation = source
+        .split("pub async fn summarize_total_tokens_by_api_key_ids")
+        .nth(1)
+        .and_then(|tail| {
+            tail.split("pub async fn summarize_usage_totals_by_user_ids")
+                .next()
+        })
+        .expect("API-key total-token summary implementation should be present");
+    assert!(implementation.contains("SUM(GREATEST(COALESCE(total_tokens, 0), 0))"));
+    assert!(implementation.contains(")::BIGINT AS total_tokens"));
+    assert!(!implementation.contains("COALESCE(input_tokens, 0) + COALESCE(output_tokens, 0)"));
 }
 
 #[test]
@@ -674,31 +691,24 @@ fn usage_counter_pending_health_does_not_scan_processed_history() {
 
 #[test]
 fn usage_sql_rebuild_matches_online_api_key_usage_semantics() {
-    assert!(super::REBUILD_API_KEY_USAGE_STATS_SQL.contains("COUNT(*)::BIGINT"));
-    assert!(super::REBUILD_API_KEY_USAGE_STATS_SQL.contains("COALESCE("));
-    assert!(super::REBUILD_API_KEY_USAGE_STATS_SQL.contains("total_tokens,"));
-    assert!(super::REBUILD_API_KEY_USAGE_STATS_SQL
-        .contains("COALESCE(input_tokens, 0) + COALESCE(output_tokens, 0)"));
-    assert!(super::REBUILD_API_KEY_USAGE_STATS_SQL.contains("AND BTRIM(api_key_id) <> ''"));
-    assert!(super::REBUILD_API_KEY_USAGE_STATS_SQL
-        .contains("AND status NOT IN ('pending', 'streaming')"));
+    let sql = super::REBUILD_API_KEY_USAGE_STATS_SQL;
+    assert!(sql.contains("COUNT(*)::BIGINT"));
+    assert!(sql.contains("GREATEST(\n        COALESCE(total_tokens, 0),"));
+    assert!(!sql.contains("COALESCE(input_tokens, 0) + COALESCE(output_tokens, 0)"));
+    assert!(sql.contains("AND BTRIM(api_key_id) <> ''"));
+    assert!(sql.contains("AND status NOT IN ('pending', 'streaming')"));
 }
 
 #[test]
 fn usage_sql_rebuild_matches_online_provider_key_usage_semantics() {
-    assert!(super::REBUILD_PROVIDER_API_KEY_USAGE_STATS_SQL.contains("COUNT(*)::BIGINT"));
-    assert!(super::REBUILD_PROVIDER_API_KEY_USAGE_STATS_SQL
-        .contains("NULLIF(BTRIM(error_message), '') IS NULL"));
-    assert!(super::REBUILD_PROVIDER_API_KEY_USAGE_STATS_SQL.contains("COALESCE("));
-    assert!(super::REBUILD_PROVIDER_API_KEY_USAGE_STATS_SQL.contains("total_tokens,"));
-    assert!(super::REBUILD_PROVIDER_API_KEY_USAGE_STATS_SQL
-        .contains("COALESCE(input_tokens, 0) + COALESCE(output_tokens, 0)"));
-    assert!(super::REBUILD_PROVIDER_API_KEY_USAGE_STATS_SQL
-        .contains("AND BTRIM(provider_api_key_id) <> ''"));
-    assert!(super::REBUILD_PROVIDER_API_KEY_USAGE_STATS_SQL
-        .contains("WHEN status NOT IN ('pending', 'streaming')"));
-    assert!(super::REBUILD_PROVIDER_API_KEY_USAGE_STATS_SQL
-        .contains("WHEN status IN ('pending', 'streaming') THEN 0"));
+    let sql = super::REBUILD_PROVIDER_API_KEY_USAGE_STATS_SQL;
+    assert!(sql.contains("COUNT(*)::BIGINT"));
+    assert!(sql.contains("NULLIF(BTRIM(error_message), '') IS NULL"));
+    assert!(sql.contains("GREATEST(\n          COALESCE(total_tokens, 0),"));
+    assert!(!sql.contains("COALESCE(input_tokens, 0) + COALESCE(output_tokens, 0)"));
+    assert!(sql.contains("AND BTRIM(provider_api_key_id) <> ''"));
+    assert!(sql.contains("WHEN status NOT IN ('pending', 'streaming')"));
+    assert!(sql.contains("WHEN status IN ('pending', 'streaming') THEN 0"));
 }
 
 #[test]
@@ -886,6 +896,82 @@ fn usage_sql_summarize_usage_leaderboard_supports_daily_aggregates() {
 }
 
 #[test]
+fn usage_sql_aggregate_reads_use_materialized_total_tokens_only_when_available() {
+    fn select_projections_before_table<'a>(source: &'a str, table: &str) -> Vec<&'a str> {
+        let marker = format!("FROM {table}\n");
+        let mut remaining = source;
+        let mut projections = Vec::new();
+        while let Some((before_table, after_table)) = remaining.split_once(marker.as_str()) {
+            projections.push(
+                before_table
+                    .rsplit_once("SELECT")
+                    .map(|(_, projection)| projection)
+                    .unwrap_or_else(|| panic!("SELECT projection for {table} should be present")),
+            );
+            remaining = after_table;
+        }
+        projections
+    }
+
+    let source = include_str!("mod.rs");
+    let breakdown = source
+        .split("async fn summarize_usage_breakdown_from_daily_aggregates")
+        .nth(1)
+        .and_then(|tail| tail.split("async fn summarize_usage_breakdown_raw").next())
+        .expect("daily aggregate usage breakdown query should be present");
+    for table in [
+        "stats_user_daily_model",
+        "stats_user_daily_provider",
+        "stats_user_daily_api_format",
+    ] {
+        assert!(breakdown.contains(table));
+    }
+    assert!(breakdown.contains("COALESCE(SUM(total_tokens), 0)::BIGINT AS total_tokens"));
+    assert!(!breakdown.contains(
+        "SUM(effective_input_tokens + output_tokens + cache_creation_tokens + cache_read_tokens)"
+    ));
+
+    let leaderboard = source
+        .split("async fn summarize_usage_leaderboard_from_daily_aggregates")
+        .nth(1)
+        .and_then(|tail| {
+            tail.split("pub async fn summarize_usage_leaderboard")
+                .next()
+        })
+        .expect("daily aggregate usage leaderboard queries should be present");
+    for (table, expected_queries) in [
+        ("stats_user_daily_provider", 1),
+        ("stats_user_daily_model", 2),
+    ] {
+        let projections = select_projections_before_table(leaderboard, table);
+        assert_eq!(
+            projections.len(),
+            expected_queries,
+            "unexpected {table} query count"
+        );
+        assert!(projections.iter().all(|projection| projection
+            .contains("COALESCE(SUM(total_tokens), 0)::BIGINT AS total_tokens")));
+    }
+
+    for (table, component_expression) in [
+        (
+            "stats_user_daily",
+            "SUM(effective_input_tokens + output_tokens + cache_creation_tokens + cache_read_tokens)",
+        ),
+        (
+            "stats_daily_model",
+            "SUM(input_tokens + output_tokens + cache_creation_tokens + cache_read_tokens)",
+        ),
+        ("stats_daily_api_key", "stats_daily_api_key.input_tokens"),
+    ] {
+        let projections = select_projections_before_table(leaderboard, table);
+        assert_eq!(projections.len(), 1, "unexpected {table} query count");
+        assert!(projections[0].contains(component_expression));
+        assert!(!projections[0].contains("SUM(total_tokens)"));
+    }
+}
+
+#[test]
 fn usage_sql_aggregate_usage_audits_supports_daily_model_and_provider_aggregates() {
     let source = include_str!("mod.rs");
     assert!(source.contains("aggregate_usage_audits_from_daily_aggregates"));
@@ -989,6 +1075,189 @@ fn usage_sql_raw_aggregates_use_canonical_billing_facts() {
     assert!(super::SUMMARIZE_USAGE_TOTALS_BY_USER_IDS_SQL
         .contains("FROM usage_billing_facts AS \"usage\""));
     assert!(!source.contains("apply_provider_api_key_codex_window_usage_delta_in_tx"));
+}
+
+#[test]
+fn usage_sql_raw_token_aggregates_do_not_renormalize_canonical_billing_facts() {
+    let source = include_str!("mod.rs");
+    for (start, end, label) in [
+        (
+            "async fn summarize_usage_audits_raw",
+            "pub async fn summarize_usage_audits",
+            "usage audit summary",
+        ),
+        (
+            "async fn summarize_usage_cache_affinity_hit_summary_raw",
+            "async fn summarize_usage_cache_affinity_hit_summary_from_daily_aggregates",
+            "cache affinity",
+        ),
+        (
+            "async fn summarize_usage_breakdown_raw",
+            "pub async fn summarize_usage_breakdown",
+            "usage breakdown",
+        ),
+        (
+            "async fn summarize_usage_leaderboard_raw",
+            "async fn summarize_usage_leaderboard_from_daily_aggregates",
+            "usage leaderboard",
+        ),
+        (
+            "async fn aggregate_usage_audits_raw",
+            "pub async fn aggregate_usage_audits",
+            "usage audit aggregation",
+        ),
+        (
+            "async fn summarize_usage_daily_heatmap_raw_from_range",
+            "async fn summarize_usage_daily_heatmap_from_daily_aggregates",
+            "usage daily heatmap",
+        ),
+    ] {
+        let body = source
+            .split(start)
+            .nth(1)
+            .and_then(|tail| tail.split(end).next())
+            .unwrap_or_else(|| panic!("{label} raw query should be present"));
+        assert!(body.contains("FROM usage_billing_facts"));
+        assert!(
+            !body.contains("split_part(lower("),
+            "{label} must not normalize canonical billing facts by API format"
+        );
+        assert!(
+            !body.contains("input_tokens - cache_"),
+            "{label} must not subtract cache tokens from canonical input tokens"
+        );
+    }
+
+    let cache_affinity = source
+        .split("async fn summarize_usage_cache_affinity_hit_summary_raw")
+        .nth(1)
+        .and_then(|tail| {
+            tail.split("async fn summarize_usage_cache_affinity_hit_summary_from_daily_aggregates")
+                .next()
+        })
+        .expect("cache affinity raw query should be present");
+    assert!(cache_affinity.contains("\"usage\".input_tokens"));
+    assert!(!cache_affinity.contains("\"usage\".effective_input_tokens"));
+    assert!(cache_affinity.contains("\"usage\".total_input_context"));
+
+    let audit_summary = source
+        .split("async fn summarize_usage_audits_raw")
+        .nth(1)
+        .and_then(|tail| tail.split("pub async fn summarize_usage_audits").next())
+        .expect("usage audit summary raw query should be present");
+    assert!(audit_summary.contains("SUM(GREATEST(COALESCE(\"usage\".cache_creation_input_tokens"));
+    assert!(!audit_summary.contains("WHEN COALESCE(\"usage\".cache_creation_input_tokens, 0) = 0"));
+
+    for (start, end, label) in [
+        (
+            "async fn summarize_usage_breakdown_raw",
+            "pub async fn summarize_usage_breakdown",
+            "usage breakdown",
+        ),
+        (
+            "async fn aggregate_usage_audits_raw",
+            "pub async fn aggregate_usage_audits",
+            "usage audit aggregation",
+        ),
+    ] {
+        let body = source
+            .split(start)
+            .nth(1)
+            .and_then(|tail| tail.split(end).next())
+            .unwrap_or_else(|| panic!("{label} raw query should be present"));
+        assert!(body.contains("\"usage\".effective_input_tokens"));
+        assert!(body.contains("\"usage\".total_input_context"));
+    }
+
+    let leaderboard = source
+        .split("async fn summarize_usage_leaderboard_raw")
+        .nth(1)
+        .and_then(|tail| {
+            tail.split("async fn summarize_usage_leaderboard_from_daily_aggregates")
+                .next()
+        })
+        .expect("usage leaderboard raw query should be present");
+    assert!(leaderboard.contains("SUM(GREATEST(COALESCE(\"usage\".total_tokens"));
+
+    let daily_heatmap = source
+        .split("async fn summarize_usage_daily_heatmap_raw_from_range")
+        .nth(1)
+        .and_then(|tail| {
+            tail.split("async fn summarize_usage_daily_heatmap_from_daily_aggregates")
+                .next()
+        })
+        .expect("usage daily heatmap raw query should be present");
+    assert!(daily_heatmap.contains("SUM(GREATEST(COALESCE(\"usage\".total_tokens"));
+    assert!(!daily_heatmap.contains("\"usage\".input_tokens + \"usage\".output_tokens"));
+}
+
+#[test]
+fn usage_sql_canonical_openai_cache_case_preserves_effective_and_total_tokens() {
+    let upstream_input_tokens = 166_103_i64;
+    let effective_input_tokens = 1_495_i64;
+    let cache_creation_tokens = 0_i64;
+    let cache_read_tokens = 164_608_i64;
+    let output_tokens = 94_i64;
+    let total_input_context = 166_103_i64;
+    let total_tokens = 166_197_i64;
+
+    assert_eq!(
+        effective_input_tokens + cache_creation_tokens + cache_read_tokens,
+        total_input_context
+    );
+    assert_eq!(total_input_context, upstream_input_tokens);
+    assert_eq!(
+        effective_input_tokens + cache_creation_tokens + cache_read_tokens + output_tokens,
+        total_tokens
+    );
+
+    let source = include_str!("mod.rs");
+    assert!(source.contains("\"usage\".effective_input_tokens"));
+    assert!(source.contains("\"usage\".total_input_context"));
+    assert!(!source.contains("split_part(lower("));
+
+    let aggregate_audit_summary = source
+        .split("async fn summarize_usage_audits_from_daily_aggregates")
+        .nth(1)
+        .and_then(|tail| tail.split("async fn summarize_usage_audits_raw").next())
+        .expect("daily aggregate usage audit summary should be present");
+    assert_eq!(
+        aggregate_audit_summary
+            .matches("WHEN effective_input_tokens = 0 AND total_input_context = 0")
+            .count(),
+        2
+    );
+    assert_eq!(
+        aggregate_audit_summary
+            .matches("+ output_tokens + cache_creation_tokens + cache_read_tokens")
+            .count(),
+        2
+    );
+    assert!(!aggregate_audit_summary.contains("SUM(input_tokens + output_tokens)"));
+
+    let raw_audit_summary = source
+        .split("async fn summarize_usage_audits_raw")
+        .nth(1)
+        .and_then(|tail| tail.split("pub async fn summarize_usage_audits").next())
+        .expect("raw usage audit summary should be present");
+    assert!(raw_audit_summary.contains("SUM(GREATEST(COALESCE(\"usage\".total_tokens, 0), 0))"));
+}
+
+#[test]
+fn usage_openai_total_input_context_includes_cache_creation_tokens() {
+    let effective_input_tokens =
+        usage_effective_input_tokens(Some(1_000), Some(100), Some(400), "openai");
+    assert_eq!(effective_input_tokens, Some(500));
+    assert_eq!(
+        usage_total_input_context(
+            Some(1_000),
+            effective_input_tokens,
+            Some(100),
+            Some(400),
+            "openai",
+        ),
+        Some(1_000)
+    );
 }
 
 #[test]
@@ -1135,6 +1404,22 @@ fn usage_billing_facts_projects_upstream_stream_mode() {
 }
 
 #[test]
+fn usage_billing_facts_total_tokens_uses_canonical_effective_input() {
+    let migration =
+        include_str!("../../migrations/20260716000000_fix_usage_billing_facts_total_tokens.sql");
+    let bootstrap =
+        include_str!("../../../../runtime/schema/bootstrap/postgres/100_usage_capture.sql");
+
+    for sql in [migration, bootstrap] {
+        assert!(sql.contains("WHEN settlement.billing_effective_input_tokens IS NOT NULL"));
+        assert!(sql.contains("GREATEST(settlement.billing_effective_input_tokens, 0)"));
+        assert!(sql.contains("WHEN settlement.billing_total_input_context IS NOT NULL"));
+        assert!(sql.contains("NULLIF(GREATEST(COALESCE(usage_rows.total_tokens, 0), 0), 0)"));
+        assert!(!sql.contains("THEN COALESCE(settlement.billing_input_tokens, 0)"));
+    }
+}
+
+#[test]
 fn usage_sql_reads_http_audits_for_single_record_fetches() {
     assert!(super::FIND_BY_REQUEST_ID_SQL.contains("LEFT JOIN usage_http_audits"));
     assert!(super::FIND_BY_ID_SQL.contains("LEFT JOIN usage_http_audits"));
@@ -1157,11 +1442,24 @@ fn usage_sql_reads_settlement_snapshots_for_single_record_fetches() {
     assert!(super::FIND_BY_ID_SQL.contains("LEFT JOIN usage_settlement_snapshots"));
     assert!(super::FIND_BY_REQUEST_ID_SQL.contains("settlement_billing_snapshot_schema_version"));
     assert!(super::FIND_BY_ID_SQL.contains("settlement_price_per_request"));
-    for sql in [super::FIND_BY_REQUEST_ID_SQL, super::FIND_BY_ID_SQL] {
+    for sql in [
+        super::FIND_BY_REQUEST_ID_SQL,
+        super::FIND_BY_ID_SQL,
+        super::LIST_USAGE_AUDITS_PREFIX,
+        super::LIST_RECENT_USAGE_AUDITS_PREFIX,
+    ] {
         assert!(sql.contains("CAST(\"usage\".input_tokens AS INTEGER) AS input_tokens"));
         assert!(sql.contains(
             "usage_settlement_snapshots.billing_input_tokens AS settlement_billing_input_tokens"
         ));
+        assert!(sql.contains(
+            "WHEN usage_settlement_snapshots.billing_effective_input_tokens IS NOT NULL"
+        ));
+        assert!(
+            sql.contains("WHEN usage_settlement_snapshots.billing_total_input_context IS NOT NULL")
+        );
+        assert!(sql.contains("NULLIF(GREATEST(COALESCE(\"usage\".total_tokens, 0), 0), 0)"));
+        assert!(!sql.contains("THEN COALESCE(usage_settlement_snapshots.billing_input_tokens, 0)"));
         assert!(sql.contains("usage_settlement_snapshots.billing_cache_creation_5m_tokens"));
         assert!(sql.contains(
             "CAST(usage_settlement_snapshots.billing_total_cost_usd AS DOUBLE PRECISION)"
