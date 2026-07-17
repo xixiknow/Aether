@@ -15,6 +15,7 @@ export interface UsageRecord {
   provider_name?: string
   model: string
   request_type?: string | null
+  requested_reasoning_effort?: string | null
   reasoning_effort?: string | null
   service_tier?: string | null
   actual_service_tier?: string | null
@@ -570,6 +571,7 @@ export const usageApi = {
       has_fallback?: boolean | null
       target_model?: string | null
       request_type?: string | null
+      requested_reasoning_effort?: string | null
       reasoning_effort?: string | null
       service_tier?: string | null
       actual_service_tier?: string | null
