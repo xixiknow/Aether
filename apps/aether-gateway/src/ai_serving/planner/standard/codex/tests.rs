@@ -1,8 +1,8 @@
 use std::collections::BTreeMap;
 
 use super::{
-    apply_codex_openai_responses_special_body_edits, apply_codex_openai_special_headers,
-    codex_model_capabilities,
+    apply_codex_openai_responses_identity_headers, apply_codex_openai_responses_special_body_edits,
+    apply_codex_openai_special_headers, codex_model_capabilities,
 };
 use crate::ai_serving::planner::standard::{
     build_cross_format_openai_responses_request_body, build_local_openai_responses_request_body,
@@ -302,8 +302,18 @@ fn completes_partial_and_null_codex_client_metadata() {
         "prompt_cache_key": "generic-affinity",
         "client_metadata": null
     });
+    let mut null_session = json!({
+        "model": "gpt-5.6-luna",
+        "input": "hello",
+        "prompt_cache_key": "generic-affinity",
+        "client_metadata": {
+            "session_id": null,
+            "thread_id": null,
+            "caller": "sdk"
+        }
+    });
 
-    for body in [&mut partial, &mut null_metadata] {
+    for body in [&mut partial, &mut null_metadata, &mut null_session] {
         apply_codex_openai_responses_special_body_edits(
             body,
             "codex",
@@ -327,6 +337,15 @@ fn completes_partial_and_null_codex_client_metadata() {
         null_metadata["client_metadata"]["thread_id"],
         null_metadata["prompt_cache_key"]
     );
+    assert_eq!(
+        null_session["client_metadata"]["session_id"],
+        null_session["prompt_cache_key"]
+    );
+    assert_eq!(
+        null_session["client_metadata"]["thread_id"],
+        null_session["prompt_cache_key"]
+    );
+    assert_eq!(null_session["client_metadata"]["caller"], "sdk");
 }
 
 #[test]
@@ -337,17 +356,34 @@ fn leaves_malformed_codex_client_metadata_unchanged() {
         "prompt_cache_key": "generic-affinity",
         "client_metadata": "invalid"
     });
+    let mut malformed_fields = json!({
+        "model": "gpt-5.6-luna",
+        "input": "hello",
+        "prompt_cache_key": "generic-affinity",
+        "client_metadata": {
+            "session_id": 42,
+            "thread_id": ""
+        }
+    });
+    let expected_malformed_metadata = malformed_fields["client_metadata"].clone();
 
-    apply_codex_openai_responses_special_body_edits(
-        &mut body,
-        "codex",
-        "openai:responses",
-        None,
-        None,
-    );
+    for candidate in [&mut body, &mut malformed_fields] {
+        apply_codex_openai_responses_special_body_edits(
+            candidate,
+            "codex",
+            "openai:responses",
+            None,
+            None,
+        );
+    }
 
     assert_eq!(body["prompt_cache_key"], "generic-affinity");
     assert_eq!(body["client_metadata"], "invalid");
+    assert_eq!(malformed_fields["prompt_cache_key"], "generic-affinity");
+    assert_eq!(
+        malformed_fields["client_metadata"],
+        expected_malformed_metadata
+    );
 }
 
 #[test]
@@ -413,10 +449,39 @@ fn chat_to_codex_responses_adapts_prompt_cache_identity_end_to_end() {
         provider_request_body["client_metadata"]["thread_id"],
         expected_identity
     );
+
+    let mut provider_request_headers = BTreeMap::new();
+    apply_codex_openai_special_headers(
+        &mut provider_request_headers,
+        &provider_request_body,
+        &HeaderMap::new(),
+        "codex",
+        "openai:responses",
+        Some("trace-codex-cache-identity"),
+        None,
+    );
+    apply_codex_openai_responses_identity_headers(
+        &mut provider_request_headers,
+        &provider_request_body,
+        "codex",
+        "openai:responses",
+    );
+    assert_eq!(
+        provider_request_headers
+            .get("session-id")
+            .map(String::as_str),
+        Some(expected_identity)
+    );
+    assert_eq!(
+        provider_request_headers
+            .get("thread-id")
+            .map(String::as_str),
+        Some(expected_identity)
+    );
 }
 
 #[test]
-fn injects_identity_headers_without_deriving_session_headers_from_body() {
+fn projects_uuid_prompt_cache_identity_into_missing_session_headers() {
     let mut headers = BTreeMap::new();
     let body = json!({
         "model": "gpt-5",
@@ -432,7 +497,7 @@ fn injects_identity_headers_without_deriving_session_headers_from_body() {
         Some("trace-codex-123"),
         Some(r#"{"account_id":"acc-123","is_fedramp":true}"#),
     );
-
+    apply_codex_openai_responses_identity_headers(&mut headers, &body, "codex", "openai:responses");
     assert_eq!(
         headers.get("chatgpt-account-id"),
         Some(&"acc-123".to_string())
@@ -445,8 +510,88 @@ fn injects_identity_headers_without_deriving_session_headers_from_body() {
     assert_eq!(headers.get("originator"), Some(&"codex_cli_rs".to_string()));
     assert!(!headers.contains_key("version"));
     assert_eq!(headers.get("x-openai-fedramp"), Some(&"true".to_string()));
-    assert_eq!(headers.get("session-id"), None);
-    assert_eq!(headers.get("thread-id"), None);
+    assert_eq!(
+        headers.get("session-id").map(String::as_str),
+        Some("172c39e6-c0a0-5a70-8b63-e0f8e0d185a3")
+    );
+    assert_eq!(
+        headers.get("thread-id").map(String::as_str),
+        Some("172c39e6-c0a0-5a70-8b63-e0f8e0d185a3")
+    );
+}
+
+#[test]
+fn projects_native_codex_metadata_for_non_uuid_cache_overrides() {
+    let mut headers = BTreeMap::new();
+    let body = json!({
+        "model": "gpt-5.6-luna",
+        "prompt_cache_key": "guardian:parent-thread",
+        "client_metadata": {
+            "session_id": "019f687b-8e92-7842-9631-d5bf0dba0a3b",
+            "thread_id": "019f6d20-1111-7222-8333-444455556666"
+        }
+    });
+
+    apply_codex_openai_special_headers(
+        &mut headers,
+        &body,
+        &HeaderMap::new(),
+        "codex",
+        "openai:responses",
+        None,
+        None,
+    );
+    apply_codex_openai_responses_identity_headers(&mut headers, &body, "codex", "openai:responses");
+
+    assert_eq!(
+        headers.get("session-id").map(String::as_str),
+        Some("019f687b-8e92-7842-9631-d5bf0dba0a3b")
+    );
+    assert_eq!(
+        headers.get("thread-id").map(String::as_str),
+        Some("019f6d20-1111-7222-8333-444455556666")
+    );
+}
+
+#[test]
+fn leaves_non_native_cache_keys_out_of_identity_headers() {
+    let mut headers = BTreeMap::new();
+    let body = json!({
+        "model": "gpt-5.6-luna",
+        "prompt_cache_key": "generic-cache-key"
+    });
+
+    apply_codex_openai_special_headers(
+        &mut headers,
+        &body,
+        &HeaderMap::new(),
+        "codex",
+        "openai:responses",
+        None,
+        None,
+    );
+    apply_codex_openai_responses_identity_headers(&mut headers, &body, "codex", "openai:responses");
+
+    assert!(!headers.contains_key("session-id"));
+    assert!(!headers.contains_key("thread-id"));
+}
+
+#[test]
+fn leaves_malformed_native_metadata_out_of_identity_headers() {
+    let mut headers = BTreeMap::new();
+    let body = json!({
+        "model": "gpt-5.6-luna",
+        "prompt_cache_key": "172c39e6-c0a0-5a70-8b63-e0f8e0d185a3",
+        "client_metadata": {
+            "session_id": 42,
+            "thread_id": ""
+        }
+    });
+
+    apply_codex_openai_responses_identity_headers(&mut headers, &body, "codex", "openai:responses");
+
+    assert!(!headers.contains_key("session-id"));
+    assert!(!headers.contains_key("thread-id"));
 }
 
 #[test]
@@ -464,7 +609,6 @@ fn injects_only_codex_client_headers_for_images_requests() {
         Some("trace-codex-image-123"),
         Some(r#"{"account_id":"acc-123","is_fedramp":true}"#),
     );
-
     assert_eq!(
         headers.get("chatgpt-account-id"),
         Some(&"acc-123".to_string())
@@ -547,6 +691,7 @@ fn preserves_client_context_headers_and_enforces_codex_provider_identity() {
         Some("trace-codex-123"),
         Some(r#"{"account_id":"acc-123","is_fedramp":true}"#),
     );
+    apply_codex_openai_responses_identity_headers(&mut headers, &body, "codex", "openai:responses");
 
     assert_eq!(
         headers.get("x-client-request-id"),
@@ -588,7 +733,7 @@ fn preserves_client_context_headers_and_enforces_codex_provider_identity() {
 }
 
 #[test]
-fn compact_does_not_derive_session_headers_from_body() {
+fn compact_projects_uuid_prompt_cache_identity_into_session_headers() {
     let mut headers = BTreeMap::new();
     let body = json!({
         "model": "gpt-5",
@@ -604,6 +749,12 @@ fn compact_does_not_derive_session_headers_from_body() {
         Some("trace-codex-compact-123"),
         Some(r#"{"account_id":"acc-123","is_fedramp":true}"#),
     );
+    apply_codex_openai_responses_identity_headers(
+        &mut headers,
+        &body,
+        "codex",
+        "openai:responses:compact",
+    );
 
     assert_eq!(
         headers.get("chatgpt-account-id"),
@@ -617,6 +768,12 @@ fn compact_does_not_derive_session_headers_from_body() {
     assert_eq!(headers.get("originator"), Some(&"codex_cli_rs".to_string()));
     assert!(!headers.contains_key("version"));
     assert_eq!(headers.get("x-openai-fedramp"), Some(&"true".to_string()));
-    assert_eq!(headers.get("session-id"), None);
-    assert_eq!(headers.get("thread-id"), None);
+    assert_eq!(
+        headers.get("session-id").map(String::as_str),
+        Some("172c39e6-c0a0-5a70-8b63-e0f8e0d185a3")
+    );
+    assert_eq!(
+        headers.get("thread-id").map(String::as_str),
+        Some("172c39e6-c0a0-5a70-8b63-e0f8e0d185a3")
+    );
 }
