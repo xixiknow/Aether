@@ -493,21 +493,6 @@ END $mig$;
 
 
 --
--- Name: request_candidates request_candidates_api_key_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
---
-
-DO $mig$ BEGIN
-  ALTER TABLE ONLY public.request_candidates
-    ADD CONSTRAINT request_candidates_api_key_id_fkey FOREIGN KEY (api_key_id) REFERENCES public.api_keys(id) ON DELETE SET NULL;
-EXCEPTION
-  WHEN duplicate_object THEN NULL;
-  WHEN duplicate_table THEN NULL;
-  WHEN invalid_table_definition THEN NULL;
-END $mig$;
-
-
-
---
 -- Name: request_candidates request_candidates_endpoint_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 
