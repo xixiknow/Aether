@@ -10,7 +10,13 @@ use sqlx::{
     query, query_scalar, Connection, PgConnection, PgPool, SqlitePool,
 };
 
-use aether_data_contracts::repository::auth::AuthApiKeyWriteRepository;
+use aether_data_contracts::repository::{
+    auth::AuthApiKeyWriteRepository,
+    usage::{
+        UsageCleanupExecutionMode, UsageCleanupTargets, UsageCleanupWindow,
+        UsageLeaderboardGroupBy, UsageLeaderboardQuery,
+    },
+};
 
 use super::{
     postgres::{all_up_migrations, pending_migrations_from_applied, POSTGRES_MIGRATOR},
@@ -29,6 +35,7 @@ struct ManagedPostgresServer {
 
 impl ManagedPostgresServer {
     async fn try_start() -> Result<Option<Self>, Box<dyn std::error::Error>> {
+        let required = local_postgres_tests_required();
         let initdb_bin = std::env::var("AETHER_INITDB_BIN")
             .ok()
             .filter(|value| !value.trim().is_empty())
@@ -39,16 +46,21 @@ impl ManagedPostgresServer {
             .unwrap_or_else(|| "postgres".to_string());
 
         if !command_exists(&initdb_bin) || !command_exists(&postgres_bin) {
-            eprintln!(
-                    "skipping postgres integration test because required binaries are unavailable: initdb={}, postgres={}",
-                    initdb_bin, postgres_bin
-                );
+            let message = format!(
+                "required postgres integration test binaries are unavailable: initdb={initdb_bin}, postgres={postgres_bin}"
+            );
+            if required {
+                return Err(std::io::Error::new(std::io::ErrorKind::NotFound, message).into());
+            }
+            eprintln!("skipping postgres integration test because {message}");
             return Ok(None);
         }
 
         match Self::start(initdb_bin, postgres_bin).await {
             Ok(server) => Ok(Some(server)),
-            Err(err) if postgres_local_startup_unavailable(err.to_string().as_str()) => {
+            Err(err)
+                if !required && postgres_local_startup_unavailable(err.to_string().as_str()) =>
+            {
                 eprintln!(
                         "skipping postgres integration test because local postgres could not start in this environment: {err}"
                     );
@@ -141,6 +153,18 @@ impl ManagedPostgresServer {
             let _ = child.wait();
         }
     }
+}
+
+fn local_postgres_tests_required() -> bool {
+    // CI can opt into failing when the isolated local PostgreSQL fixture is unavailable.
+    std::env::var("AETHER_REQUIRE_LOCAL_POSTGRES_TESTS")
+        .ok()
+        .is_some_and(|value| {
+            matches!(
+                value.trim().to_ascii_lowercase().as_str(),
+                "1" | "true" | "yes" | "on"
+            )
+        })
 }
 
 impl Drop for ManagedPostgresServer {
@@ -2424,6 +2448,305 @@ INSERT INTO public.request_candidates (
         standalone_api_key_id.as_deref(),
         Some("deleted-standalone-api-key")
     );
+}
+
+#[tokio::test]
+async fn postgres_expired_api_key_cleanup_preserves_historical_identity() {
+    let Some(server) = ManagedPostgresServer::try_start()
+        .await
+        .expect("postgres expired API key cleanup test should start or skip")
+    else {
+        return;
+    };
+    let database_url = server.database_url();
+
+    let pool = PgPool::connect(database_url)
+        .await
+        .expect("pool should connect");
+    let pending = prepare_database_for_startup(&pool)
+        .await
+        .expect("clean database bootstrap should succeed");
+    assert!(
+        pending.is_empty(),
+        "clean database bootstrap should not leave pending migrations: {pending:?}"
+    );
+
+    query(
+        r#"
+INSERT INTO public.users (id, username, email_verified)
+VALUES ('expired-cleanup-user', 'expired-cleanup-user', TRUE)
+"#,
+    )
+    .execute(&pool)
+    .await
+    .expect("expired cleanup user fixture should be inserted");
+    query(
+        r#"
+INSERT INTO public.api_keys (
+  id,
+  user_id,
+  key_hash,
+  expires_at,
+  auto_delete_on_expiry
+) VALUES (
+  'expired-cleanup-api-key',
+  'expired-cleanup-user',
+  'expired-cleanup-key-hash',
+  NOW() - INTERVAL '1 day',
+  TRUE
+)
+"#,
+    )
+    .execute(&pool)
+    .await
+    .expect("expired API key fixture should be inserted");
+    query(
+        r#"
+INSERT INTO public.wallets (id, api_key_id, created_at, updated_at)
+VALUES (
+  'expired-cleanup-wallet',
+  'expired-cleanup-api-key',
+  NOW(),
+  NOW()
+)
+"#,
+    )
+    .execute(&pool)
+    .await
+    .expect("expired API key wallet fixture should be inserted");
+    query(
+        r#"
+INSERT INTO public.usage (
+  id,
+  request_id,
+  api_key_id,
+  provider_name,
+  model
+) VALUES (
+  'expired-cleanup-usage',
+  'expired-cleanup-usage-request',
+  'expired-cleanup-api-key',
+  'historical-provider',
+  'historical-model'
+)
+"#,
+    )
+    .execute(&pool)
+    .await
+    .expect("expired API key usage fixture should be inserted");
+    query(
+        r#"
+INSERT INTO public.request_candidates (
+  id,
+  request_id,
+  api_key_id,
+  candidate_index,
+  status
+) VALUES (
+  'expired-cleanup-candidate',
+  'expired-cleanup-candidate-request',
+  'expired-cleanup-api-key',
+  0,
+  'pending'
+)
+"#,
+    )
+    .execute(&pool)
+    .await
+    .expect("expired API key request candidate fixture should be inserted");
+
+    let now = chrono::Utc::now();
+    let summary = postgres_backend(database_url)
+        .usage_write_repository()
+        .cleanup_usage(
+            &UsageCleanupWindow {
+                detail_cutoff: now,
+                compressed_cutoff: now,
+                header_cutoff: now,
+                log_cutoff: now,
+            },
+            100,
+            false,
+            UsageCleanupTargets {
+                detail_body: false,
+                compressed_body: false,
+                headers: false,
+                records: false,
+                expired_keys: true,
+            },
+            UsageCleanupExecutionMode::Policy,
+        )
+        .await
+        .expect("expired API key cleanup should succeed");
+    assert_eq!(summary.keys_cleaned, 1);
+
+    let api_key_exists: bool = query_scalar(
+        "SELECT EXISTS (SELECT 1 FROM public.api_keys WHERE id = 'expired-cleanup-api-key')",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("expired API key deletion should be observable");
+    assert!(!api_key_exists);
+
+    let wallet_status: String =
+        query_scalar("SELECT status FROM public.wallets WHERE id = 'expired-cleanup-wallet'")
+            .fetch_one(&pool)
+            .await
+            .expect("expired API key wallet should remain readable");
+    assert_eq!(wallet_status, "disabled");
+
+    let usage_api_key_id: Option<String> =
+        query_scalar("SELECT api_key_id FROM public.usage WHERE id = 'expired-cleanup-usage'")
+            .fetch_one(&pool)
+            .await
+            .expect("historical usage identity should remain readable");
+    assert_eq!(usage_api_key_id.as_deref(), Some("expired-cleanup-api-key"));
+
+    let candidate_api_key_id: Option<String> = query_scalar(
+        "SELECT api_key_id FROM public.request_candidates WHERE id = 'expired-cleanup-candidate'",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("historical request candidate identity should remain readable");
+    assert_eq!(
+        candidate_api_key_id.as_deref(),
+        Some("expired-cleanup-api-key")
+    );
+}
+
+#[tokio::test]
+async fn postgres_api_key_leaderboard_user_filter_preserves_aggregate_history() {
+    let Some(server) = ManagedPostgresServer::try_start()
+        .await
+        .expect("postgres API key leaderboard test should start or skip")
+    else {
+        return;
+    };
+    let database_url = server.database_url();
+
+    let pool = PgPool::connect(database_url)
+        .await
+        .expect("pool should connect");
+    let pending = prepare_database_for_startup(&pool)
+        .await
+        .expect("clean database bootstrap should succeed");
+    assert!(
+        pending.is_empty(),
+        "clean database bootstrap should not leave pending migrations: {pending:?}"
+    );
+
+    query(
+        r#"
+INSERT INTO public.users (id, username, email_verified)
+VALUES ('leaderboard-owner', 'leaderboard-owner', TRUE)
+"#,
+    )
+    .execute(&pool)
+    .await
+    .expect("leaderboard owner fixture should be inserted");
+    query(
+        r#"
+INSERT INTO public.api_keys (id, user_id, key_hash, name)
+VALUES
+  ('aggregate-current-key', 'leaderboard-owner', 'aggregate-current-key-hash', 'Current Key'),
+  ('aggregate-deleted-key', 'leaderboard-owner', 'aggregate-deleted-key-hash', 'Deleted Key')
+"#,
+    )
+    .execute(&pool)
+    .await
+    .expect("leaderboard API key fixtures should be inserted");
+
+    let stats_day = historical_stats_day();
+    query(
+        r#"
+INSERT INTO public.usage (
+  id,
+  request_id,
+  user_id,
+  api_key_id,
+  api_key_name,
+  provider_name,
+  model,
+  created_at
+) VALUES (
+  'deleted-key-identity-usage',
+  'deleted-key-identity-request',
+  'leaderboard-owner',
+  'aggregate-deleted-key',
+  'Deleted Key',
+  'historical-provider',
+  'historical-model',
+  $1
+)
+"#,
+    )
+    .bind(stats_day)
+    .execute(&pool)
+    .await
+    .expect("deleted API key identity evidence should be inserted");
+
+    let repository = aether_data_postgres::SqlxAuthApiKeySnapshotReadRepository::new(pool.clone());
+    assert!(repository
+        .delete_user_api_key("leaderboard-owner", "aggregate-deleted-key")
+        .await
+        .expect("historical API key deletion should succeed"));
+
+    query(
+        r#"
+INSERT INTO public.stats_daily_api_key (
+  id,
+  api_key_id,
+  api_key_name,
+  date,
+  total_requests,
+  input_tokens,
+  total_cost
+) VALUES
+  ('aggregate-current-stats', 'aggregate-current-key', 'Current Key', $1, 3, 30, 0.3),
+  ('aggregate-deleted-stats', 'aggregate-deleted-key', 'Deleted Key', $1, 7, 70, 0.7)
+"#,
+    )
+    .bind(stats_day)
+    .execute(&pool)
+    .await
+    .expect("API key daily aggregate fixtures should be inserted");
+
+    let leaderboard_query = UsageLeaderboardQuery {
+        created_from_unix_secs: u64::try_from(stats_day.timestamp())
+            .expect("historical stats day should be nonnegative"),
+        created_until_unix_secs: u64::try_from((stats_day + chrono::Duration::days(1)).timestamp())
+            .expect("historical stats end should be nonnegative"),
+        group_by: UsageLeaderboardGroupBy::ApiKey,
+        user_id: Some("leaderboard-owner".to_string()),
+        provider_name: None,
+        model: None,
+    };
+    let usage_reader = postgres_backend(database_url).usage_read_repository();
+    let summaries = usage_reader
+        .summarize_usage_leaderboard(&leaderboard_query)
+        .await
+        .expect("user-filtered API key aggregate leaderboard should succeed");
+    let by_key: std::collections::BTreeMap<_, _> = summaries
+        .iter()
+        .map(|item| (item.group_key.as_str(), item.request_count))
+        .collect();
+    assert_eq!(by_key.get("aggregate-current-key"), Some(&3));
+    assert_eq!(by_key.get("aggregate-deleted-key"), Some(&7));
+
+    query("DELETE FROM public.usage WHERE id = 'deleted-key-identity-usage'")
+        .execute(&pool)
+        .await
+        .expect("historical identity evidence should be removable");
+    let summaries = usage_reader
+        .summarize_usage_leaderboard(&leaderboard_query)
+        .await
+        .expect("aggregate-only current API key leaderboard should succeed");
+    let by_key: std::collections::BTreeMap<_, _> = summaries
+        .iter()
+        .map(|item| (item.group_key.as_str(), item.request_count))
+        .collect();
+    assert_eq!(by_key.get("aggregate-current-key"), Some(&3));
+    assert_eq!(by_key.get("aggregate-deleted-key"), None);
 }
 
 #[tokio::test]
