@@ -534,6 +534,7 @@ type QuickSelectorValue =
   | 'enabled'
 
 type BatchActionValue =
+  | 'edit_config'
   | 'export'
   | 'delete'
   | 'refresh_oauth'
@@ -574,6 +575,7 @@ const props = defineProps<{
 const emit = defineEmits<{
   'update:modelValue': [value: boolean]
   changed: []
+  'edit-config': [keyIds: string[]]
 }>()
 
 const QUICK_SELECT_OPTIONS: Array<{ value: QuickSelectorValue; label: string }> = [
@@ -590,6 +592,7 @@ const QUICK_SELECT_OPTIONS: Array<{ value: QuickSelectorValue; label: string }> 
 ]
 
 const ACTION_OPTIONS: BatchActionOption[] = [
+  { value: 'edit_config', label: '编辑配置', hint: '统一修改支持 API、调度参数与自动获取模型设置。' },
   { value: 'refresh_quota', label: '刷新额度', hint: '调用额度刷新接口，适合核对最新配额状态。' },
   { value: 'refresh_oauth', label: '刷新 OAuth', hint: '仅对 OAuth 账号有效，非 OAuth 账号会自动跳过。' },
   { value: 'set_proxy', label: '配置代理', hint: '为选中账号绑定独立代理节点。' },
@@ -979,6 +982,11 @@ async function confirmAndExecuteAction(action: BatchActionValue): Promise<void> 
   }
   if (!canExecuteSpecifiedAction(action)) return
 
+  if (action === 'edit_config') {
+    await openBatchEditor()
+    return
+  }
+
   const actionOption = ACTION_OPTIONS.find((item) => item.value === action)
   const actionLabel = actionOption?.label || '执行动作'
   const scopeLabel = selectAllFiltered.value ? '筛选结果' : '已选账号'
@@ -990,6 +998,31 @@ async function confirmAndExecuteAction(action: BatchActionValue): Promise<void> 
   })
   if (!confirmed) return
   await executeAction(action)
+}
+
+async function openBatchEditor(): Promise<void> {
+  if (executing.value || selectedCount.value === 0) return
+  executing.value = true
+  progressDone.value = 0
+  progressTotal.value = 0
+  progressLabel.value = selectAllFiltered.value ? '正在解析筛选结果...' : '正在准备批量编辑...'
+  try {
+    const selectedKeys = await resolveSelectedItems()
+    const keyIds = selectedKeys.map(key => key.key_id)
+    if (keyIds.length === 0) {
+      warning('未找到可编辑账号，请刷新列表重试')
+      return
+    }
+    emit('update:modelValue', false)
+    emit('edit-config', keyIds)
+  } catch (err) {
+    showError(parseApiError(err, '准备批量编辑失败'))
+  } finally {
+    executing.value = false
+    progressDone.value = 0
+    progressTotal.value = 0
+    progressLabel.value = ''
+  }
 }
 
 const DELETE_POLL_INTERVAL_MS = 2000
