@@ -758,7 +758,9 @@ function handleRequestScopeChange(value: string) {
 }
 
 function normalizeUnavailableSessionCompactionScope() {
-  if (props.endpoints === undefined) return
+  // An empty list is also used while endpoints are loading or after loading fails,
+  // so it cannot prove that the existing scope is unsupported.
+  if (!props.endpoints || props.endpoints.length === 0) return
   if (
     requestScopeValue.value === COMPACT_REQUEST_SCOPE_VALUE
     && !sessionCompactionScopeAvailable.value

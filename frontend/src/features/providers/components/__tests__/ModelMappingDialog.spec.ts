@@ -251,6 +251,65 @@ describe('ModelMappingDialog', () => {
     })
   })
 
+  it('preserves an edited compact scope when endpoint capabilities are unavailable', async () => {
+    const model = {
+      id: 'model-sol',
+      provider_model_name: 'gpt-5.6-sol',
+      global_model_display_name: 'GPT-5.6 Sol',
+      provider_model_mappings: [{
+        name: 'gpt-5.6-luna',
+        priority: 1,
+        endpoint_ids: ['endpoint-responses'],
+        operations: ['compact'],
+      }],
+    } as Model
+    const editingGroup: AliasGroup = {
+      model,
+      apiFormatsKey: '',
+      apiFormats: [],
+      endpointIdsKey: 'endpoint-responses',
+      endpointIds: ['endpoint-responses'],
+      operationsKey: 'compact',
+      operations: ['compact'],
+      aliases: model.provider_model_mappings ?? [],
+    }
+    const open = ref(false)
+    const root = document.createElement('div')
+    document.body.appendChild(root)
+    const app = createApp(defineComponent({
+      setup() {
+        return () => h(ModelMappingDialog, {
+          open: open.value,
+          providerId: 'provider-1',
+          endpoints: [],
+          models: [model],
+          editingGroup,
+          'onUpdate:open': (value: boolean) => { open.value = value },
+        })
+      },
+    }))
+    app.mount(root)
+    mountedApps.push({ app, root })
+
+    open.value = true
+    await nextTick()
+    await nextTick()
+
+    const saveButton = [...root.querySelectorAll('button')]
+      .find(button => button.textContent?.includes('保存映射'))
+    saveButton?.click()
+    await vi.waitFor(() => expect(updateModel).toHaveBeenCalledTimes(1))
+
+    expect(updateModel).toHaveBeenCalledWith('provider-1', 'model-sol', {
+      provider_model_mappings: [{
+        name: 'gpt-5.6-luna',
+        priority: 1,
+        endpoint_ids: ['endpoint-responses'],
+        operations: ['compact'],
+      }],
+    })
+  })
+
   it('normalizes and replaces an edited compact operation scope', async () => {
     const endpoint = {
       id: 'endpoint-responses',

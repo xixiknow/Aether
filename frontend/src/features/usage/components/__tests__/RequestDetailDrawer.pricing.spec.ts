@@ -98,6 +98,40 @@ describe('RequestDetailDrawer settlement pricing', () => {
     expect(document.body.textContent).not.toContain('输出 $0/M')
   })
 
+  it('shows the compact request badge in the model header', async () => {
+    apiMocks.getRequestDetail.mockResolvedValue({
+      ...buildEmbeddingDetail(),
+      id: 'usage-compact-1',
+      request_id: 'req-compact-1',
+      request_type: 'compact',
+    })
+
+    let isOpen!: Ref<boolean>
+    const Host = defineComponent({
+      setup() {
+        isOpen = ref(false)
+        return () => h(RequestDetailDrawer, {
+          isOpen: isOpen.value,
+          requestId: 'usage-compact-1',
+        })
+      },
+    })
+
+    const root = document.createElement('div')
+    document.body.appendChild(root)
+    const app = createApp(Host)
+    app.mount(root)
+    mountedApps.push({ app, root })
+
+    isOpen.value = true
+    await nextTick()
+
+    await vi.waitFor(() => {
+      expect(document.body.querySelector('[data-request-detail-model-badge="compact"]')?.textContent?.trim())
+        .toBe('会话压缩')
+    })
+  })
+
   it('shows mapping, reasoning, Fast, and Cyber together in the model header', async () => {
     apiMocks.getRequestDetail.mockResolvedValue({
       ...buildEmbeddingDetail(),
