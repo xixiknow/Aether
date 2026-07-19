@@ -306,6 +306,7 @@ export interface PoolScoresQuery {
 
 export interface PoolKeySelectionRequest {
   search?: string
+  status?: PoolKeysQuery['status']
   quick_selectors?: string[]
 }
 

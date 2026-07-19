@@ -3261,7 +3261,8 @@ async fn gateway_handles_admin_pool_resolve_selection_locally_with_trusted_admin
         .header(TRUSTED_ADMIN_SESSION_ID_HEADER, "session-123")
         .json(&json!({
             "search": "alpha",
-            "quick_selectors": ["enabled", "proxy_set"]
+            "status": "available",
+            "quick_selectors": ["proxy_set"]
         }))
         .send()
         .await
@@ -3275,10 +3276,130 @@ async fn gateway_handles_admin_pool_resolve_selection_locally_with_trusted_admin
     assert_eq!(items[0]["key_id"], json!("key-openai-a"));
     assert_eq!(items[0]["key_name"], json!("alpha proxy"));
     assert_eq!(items[0]["auth_type"], json!("api_key"));
+
+    let invalid_status_response = reqwest::Client::new()
+        .post(format!(
+            "{gateway_url}/api/admin/pool/provider-openai/keys/resolve-selection"
+        ))
+        .header(crate::constants::GATEWAY_HEADER, "rust-phase3b")
+        .header(TRUSTED_ADMIN_USER_ID_HEADER, "admin-user-123")
+        .header(TRUSTED_ADMIN_USER_ROLE_HEADER, "admin")
+        .header(TRUSTED_ADMIN_SESSION_ID_HEADER, "session-123")
+        .json(&json!({
+            "status": "not-a-status"
+        }))
+        .send()
+        .await
+        .expect("request should succeed");
+    assert_eq!(invalid_status_response.status(), StatusCode::BAD_REQUEST);
+    let invalid_status_payload: serde_json::Value = invalid_status_response
+        .json()
+        .await
+        .expect("json body should parse");
+    assert!(invalid_status_payload["detail"]
+        .as_str()
+        .is_some_and(|detail| detail.starts_with("status must be one of:")));
     assert_eq!(*upstream_hits.lock().expect("mutex should lock"), 0);
 
     gateway_handle.abort();
     upstream_handle.abort();
+}
+
+#[tokio::test]
+async fn gateway_pool_resolve_selection_matches_list_search_scope_for_status() {
+    let provider = sample_provider("provider-search-scope", "openai", 10);
+    let mut key = sample_key(
+        "key-visible-name",
+        "provider-search-scope",
+        "openai:chat",
+        "sk-search-scope",
+    );
+    key.name = "visible account".to_string();
+    key.note = Some("hidden-note-match".to_string());
+    let provider_catalog_repository = Arc::new(InMemoryProviderCatalogReadRepository::seed(
+        vec![provider],
+        Vec::new(),
+        vec![key],
+    ));
+    let state = AppState::new()
+        .expect("gateway should build")
+        .with_data_state_for_tests(GatewayDataState::with_provider_catalog_reader_for_tests(
+            provider_catalog_repository,
+        ));
+
+    let all_list_response = local_admin_pool_response(
+        &state,
+        http::Method::GET,
+        "/api/admin/pool/provider-search-scope/keys?page=1&page_size=50&search=hidden-note-match&status=all&sort_by=score",
+        None,
+    )
+    .await;
+    assert_eq!(all_list_response.status(), StatusCode::OK);
+    let all_list_payload: serde_json::Value = serde_json::from_slice(
+        &to_bytes(all_list_response.into_body(), usize::MAX)
+            .await
+            .expect("body should read"),
+    )
+    .expect("json body should parse");
+    assert_eq!(all_list_payload["total"], json!(0));
+
+    let all_selection_response = local_admin_pool_response(
+        &state,
+        http::Method::POST,
+        "/api/admin/pool/provider-search-scope/keys/resolve-selection",
+        Some(json!({
+            "search": "hidden-note-match",
+            "status": "all"
+        })),
+    )
+    .await;
+    assert_eq!(all_selection_response.status(), StatusCode::OK);
+    let all_selection_payload: serde_json::Value = serde_json::from_slice(
+        &to_bytes(all_selection_response.into_body(), usize::MAX)
+            .await
+            .expect("body should read"),
+    )
+    .expect("json body should parse");
+    assert_eq!(all_selection_payload["total"], json!(0));
+
+    let available_list_response = local_admin_pool_response(
+        &state,
+        http::Method::GET,
+        "/api/admin/pool/provider-search-scope/keys?page=1&page_size=50&search=hidden-note-match&status=available",
+        None,
+    )
+    .await;
+    assert_eq!(available_list_response.status(), StatusCode::OK);
+    let available_list_payload: serde_json::Value = serde_json::from_slice(
+        &to_bytes(available_list_response.into_body(), usize::MAX)
+            .await
+            .expect("body should read"),
+    )
+    .expect("json body should parse");
+    assert_eq!(available_list_payload["total"], json!(1));
+
+    let available_selection_response = local_admin_pool_response(
+        &state,
+        http::Method::POST,
+        "/api/admin/pool/provider-search-scope/keys/resolve-selection",
+        Some(json!({
+            "search": "hidden-note-match",
+            "status": "available"
+        })),
+    )
+    .await;
+    assert_eq!(available_selection_response.status(), StatusCode::OK);
+    let available_selection_payload: serde_json::Value = serde_json::from_slice(
+        &to_bytes(available_selection_response.into_body(), usize::MAX)
+            .await
+            .expect("body should read"),
+    )
+    .expect("json body should parse");
+    assert_eq!(available_selection_payload["total"], json!(1));
+    assert_eq!(
+        available_selection_payload["items"][0]["key_id"],
+        json!("key-visible-name")
+    );
 }
 
 #[tokio::test]

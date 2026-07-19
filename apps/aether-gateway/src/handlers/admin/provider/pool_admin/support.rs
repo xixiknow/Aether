@@ -102,10 +102,12 @@ pub(crate) fn parse_admin_pool_quick_selectors(query: Option<&str>) -> Vec<Strin
 }
 
 pub(crate) fn parse_admin_pool_status_filter(query: Option<&str>) -> Result<String, String> {
-    let value = query_param_value(query, "status")
-        .unwrap_or_else(|| "all".to_string())
-        .trim()
-        .to_ascii_lowercase();
+    let value = query_param_value(query, "status");
+    parse_admin_pool_status_value(value.as_deref())
+}
+
+pub(crate) fn parse_admin_pool_status_value(value: Option<&str>) -> Result<String, String> {
+    let value = value.unwrap_or("all").trim().to_ascii_lowercase();
     match value.as_str() {
         "all"
         | "available"
