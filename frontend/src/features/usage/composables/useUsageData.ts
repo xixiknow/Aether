@@ -669,6 +669,12 @@ export function useUsageData(options: UseUsageDataOptions) {
               ? record.target_model
               : null)
           : existing.target_model,
+        // Request type is client-request identity, not a provider-candidate fact. Preserve a
+        // known compact operation when a later sparse snapshot omits it.
+        request_type:
+          typeof record.request_type === 'string' && record.request_type.trim()
+            ? record.request_type
+            : existing.request_type,
         requested_reasoning_effort:
           typeof record.requested_reasoning_effort === 'string'
             && record.requested_reasoning_effort.trim()

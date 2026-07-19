@@ -306,6 +306,27 @@ describe('UsageRecordsTable', () => {
       .toBe('Fast')
   })
 
+  it('shows request reasoning effort while the record is pending', () => {
+    const root = mountUsageRecordsTable([buildRecord({
+      status: 'pending',
+      requested_reasoning_effort: 'max',
+      reasoning_effort: null,
+    })])
+
+    expect(root.querySelector('[data-usage-model-badge="reasoning"]')?.textContent?.trim())
+      .toBe('max')
+  })
+
+  it('marks Responses compaction while the record is pending', () => {
+    const root = mountUsageRecordsTable([buildRecord({
+      status: 'pending',
+      request_type: 'compact',
+    })])
+
+    expect(root.querySelector('[data-usage-model-badge="compact"]')?.textContent?.trim())
+      .toBe('会话压缩')
+  })
+
   it('shows mapping, reasoning, Fast, and Cyber in the model area', () => {
     const root = mountUsageRecordsTable([buildRecord({
       model: 'gpt-5',

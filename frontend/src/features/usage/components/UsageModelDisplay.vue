@@ -69,7 +69,7 @@ import { Badge } from '@/components/ui'
 import { isCyberPolicyError } from '../utils/cyberError'
 import { formatServiceTierFact } from '../utils/service-tier'
 
-type ModelBadgeKey = 'reasoning' | 'fast' | 'cyber' | 'reasoning_tokens'
+type ModelBadgeKey = 'compact' | 'reasoning' | 'fast' | 'cyber' | 'reasoning_tokens'
 
 interface ModelBadgePresentation {
   key: ModelBadgeKey
@@ -84,6 +84,7 @@ interface UsageModelDisplayRecord {
   model: string
   target_model?: string | null
   model_version?: string | null
+  request_type?: string | null
   requested_reasoning_effort?: string | null
   reasoning_effort?: string | null
   service_tier?: string | null
@@ -132,6 +133,16 @@ const reasoningLabel = computed(() => {
 
 const modelBadges = computed<ModelBadgePresentation[]>(() => {
   const badges: ModelBadgePresentation[] = []
+  if (normalizeText(props.record.request_type)?.toLowerCase() === 'compact') {
+    badges.push({
+      key: 'compact',
+      label: '会话压缩',
+      variant: 'outline',
+      className: 'border-sky-500/30 bg-sky-500/5 text-sky-700 dark:text-sky-300',
+      title: '会话压缩',
+      ariaLabel: '会话压缩',
+    })
+  }
   if (props.showReasoningBadge && reasoningLabel.value) {
     badges.push({
       key: 'reasoning',
