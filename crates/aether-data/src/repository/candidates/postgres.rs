@@ -687,9 +687,11 @@ impl SqlxRequestCandidateReadRepository {
 
     pub async fn upsert(
         &self,
-        candidate: UpsertRequestCandidateRecord,
+        mut candidate: UpsertRequestCandidateRecord,
     ) -> Result<StoredRequestCandidate, DataLayerError> {
         candidate.validate()?;
+        sanitize_jsonb_field(&mut candidate.extra_data);
+        sanitize_jsonb_field(&mut candidate.required_capabilities);
         self.tx_runner
             .run_read_write(|tx| {
                 Box::pin(async move {
@@ -862,8 +864,16 @@ impl TryFrom<UpsertRequestCandidateRecord> for BatchUpsertRequestCandidateRow {
             error_message: candidate.error_message,
             latency_ms: candidate.latency_ms.map(to_i32_u64).transpose()?,
             concurrent_requests: candidate.concurrent_requests.map(to_i32).transpose()?,
-            extra_data: candidate.extra_data,
-            required_capabilities: candidate.required_capabilities,
+            extra_data: {
+                let mut value = candidate.extra_data;
+                sanitize_jsonb_field(&mut value);
+                value
+            },
+            required_capabilities: {
+                let mut value = candidate.required_capabilities;
+                sanitize_jsonb_field(&mut value);
+                value
+            },
             created_at_unix_ms: candidate.created_at_unix_ms.map(|value| value as f64),
             started_at_unix_ms: candidate.started_at_unix_ms.map(|value| value as f64),
             finished_at_unix_ms: candidate.finished_at_unix_ms.map(|value| value as f64),
@@ -1139,13 +1149,83 @@ fn to_i32_u64(value: u64) -> Result<i32, DataLayerError> {
     })
 }
 
+/// Postgres `jsonb` cannot store the NUL character (` `): it rejects the
+/// value with `unsupported Unicode escape sequence` / `  cannot be
+/// converted to text`. Upstream payloads (e.g. provider output echoed into
+/// `extra_data`) occasionally carry embedded NUL bytes, which made every batch
+/// flush of `request_candidates` fail. Strip NULs from all nested strings and
+/// object keys before binding to a `jsonb` column.
+fn sanitize_jsonb_value(value: &mut serde_json::Value) {
+    match value {
+        serde_json::Value::String(text) => {
+            if text.contains('\0') {
+                text.retain(|ch| ch != '\0');
+            }
+        }
+        serde_json::Value::Array(items) => {
+            for item in items {
+                sanitize_jsonb_value(item);
+            }
+        }
+        serde_json::Value::Object(map) => {
+            if map.keys().any(|key| key.contains('\0')) {
+                let rebuilt = std::mem::take(map);
+                for (key, mut val) in rebuilt {
+                    sanitize_jsonb_value(&mut val);
+                    let clean_key: String = key.chars().filter(|ch| *ch != '\0').collect();
+                    map.insert(clean_key, val);
+                }
+            } else {
+                for val in map.values_mut() {
+                    sanitize_jsonb_value(val);
+                }
+            }
+        }
+        serde_json::Value::Null
+        | serde_json::Value::Bool(_)
+        | serde_json::Value::Number(_) => {}
+    }
+}
+
+fn sanitize_jsonb_field(value: &mut Option<serde_json::Value>) {
+    if let Some(inner) = value {
+        sanitize_jsonb_value(inner);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
-        SqlxRequestCandidateReadRepository, UPSERT_CONFLICT_INHERIT_IS_CACHED_SQL,
-        UPSERT_CONFLICT_SQL, UPSERT_SQL,
+        sanitize_jsonb_value, SqlxRequestCandidateReadRepository,
+        UPSERT_CONFLICT_INHERIT_IS_CACHED_SQL, UPSERT_CONFLICT_SQL, UPSERT_SQL,
     };
     use crate::driver::postgres::{PostgresPoolConfig, PostgresPoolFactory};
+
+    #[test]
+    fn sanitize_jsonb_value_strips_nul_from_strings_keys_and_nested_values() {
+        let mut value = serde_json::json!({
+            "mes\u{0000}sage": "he\u{0000}llo",
+            "nested": {
+                "list": ["a\u{0000}b", 42, "c"],
+                "clean": "ok"
+            }
+        });
+
+        sanitize_jsonb_value(&mut value);
+
+        assert_eq!(
+            value,
+            serde_json::json!({
+                "message": "hello",
+                "nested": {
+                    "list": ["ab", 42, "c"],
+                    "clean": "ok"
+                }
+            })
+        );
+        // Serialization must no longer emit the   escape Postgres rejects.
+        assert!(!serde_json::to_string(&value).unwrap().contains("\\u0000"));
+    }
 
     #[test]
     fn upsert_sql_does_not_default_missing_or_epoch_created_at_to_epoch() {
